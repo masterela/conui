@@ -2456,6 +2456,23 @@ mod tests {
         assert!(drawn[3].contains(mark::ARROW_DOWN), "no hint that choices are below: {drawn:?}");
     }
 
+    /// Drawing the menu is what makes `PageDown` mean six rows here rather than the `rows(8)` cap
+    /// or the twenty choices: the selection learns the height from whoever windowed it, and for an
+    /// open dropdown that is the menu, borders already taken off.
+    #[test]
+    fn paging_an_open_dropdown_moves_by_the_menu_that_was_drawn() {
+        let options: Vec<String> = (0..20).map(|n| format!("choice {n:02}")).collect();
+        let mut dropdown = Dropdown::new().rows(8);
+        dropdown.open();
+        let menu = Menu::new(dropdown.selection(), options.iter().map(String::as_str));
+        let _ = rows(&menu, 14, 8);
+        assert_eq!(dropdown.selection().height(), 6, "eight rows less two of border");
+
+        let key = conui_input::KeyEvent::plain(conui_input::KeyCode::PageDown);
+        assert!(dropdown.handle(&key, options.len()));
+        assert_eq!(dropdown.selected(), 5, "a page of six, less the row carried over");
+    }
+
     #[test]
     fn a_menu_too_small_to_frame_draws_nothing_rather_than_half_a_border() {
         let selection = Selection::new();
