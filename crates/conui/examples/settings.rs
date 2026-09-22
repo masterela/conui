@@ -4,7 +4,7 @@
 //! awkward case that makes a toolkit prove itself: several controls on screen at once, only one of
 //! them listening, and a list that has to paint over the top of everything else.
 //!
-//! Three things are worth watching:
+//! A few things are worth watching:
 //!
 //! - **Focus is a value.** [`Focus<Id>`] is a ring of your own enum, and each widget is *told*
 //!   whether it is focused. Nothing registers itself during render, so what has focus never
@@ -21,6 +21,10 @@
 //!   It is drawn in full, starting above the top of the pane, and clipped — so nothing in it knows
 //!   it is scrolled. What makes it possible is that the content can say how tall it is: a plain
 //!   column stretches to its parent, and `fit()` is the opt-in that makes it add itself up instead.
+//! - **Find shows where the split falls.** `/` over the pane opens a field that takes every key,
+//!   and `Enter` scrolls to the match. The viewport moves the least that brings the row into view,
+//!   because it remembers what the last frame showed; but *which* row a word is on is a question no
+//!   layout will answer, so the pane is composed from a table the search can count.
 //!
 //! Applying really does re-theme the running app, so the buttons are not decoration. The whole
 //! screen is usable with the mouse as well: click a tab, a field or a button, click a dropdown to
@@ -40,7 +44,7 @@ use conui::widget::{
 };
 use conui::widget::{Input, Rule};
 use conui::{
-    App, BarStyle, Buffer, Config, Dropdown, Editor, Event, Focus, Frame, Hits, KeyCode,
+    App, BarStyle, Buffer, Config, Dropdown, Editor, Event, Focus, Frame, Hits, KeyCode, KeyEvent,
     MouseEvent, Pos, Rect, Role, Selection, Style, Theme, View, Viewport,
 };
 
@@ -51,6 +55,11 @@ const LABEL_WIDTH: u16 = 12;
 /// Width of a select field. Wide enough for the longest choice plus its brackets and caret.
 const CONTROL_WIDTH: u16 = 22;
 const PREVIEW_WIDTH: u16 = 30;
+/// Room for the status phrase on the right of the footer. The rest of the row is the legend's, which
+/// has more to say than a two-word status does.
+const STATUS_WIDTH: u16 = 22;
+/// Room for the find field's own legend, which is fixed text and so is a fixed width.
+const FIND_HINT_WIDTH: u16 = 18;
 
 const TABS: [&str; 3] = ["APPEARANCE", "LAYOUT", "ABOUT"];
 
@@ -83,6 +92,108 @@ drawn in full, from an origin above the visible region,
 and the clip throws away the rest — nothing is re-laid
 out and the paragraphs cannot tell they are half off
 screen. Wheel, arrows, PAGE UP/DOWN, HOME and END.";
+
+const LICENSE: &str = "MIT OR Apache-2.0";
+/// Blank rows between the pane's paragraphs. Written once, because both the column that draws them
+/// and the search that counts them have to agree.
+const PANE_GAP: u16 = 1;
+
+/// The ABOUT pane, as data rather than as a composed view.
+///
+/// Two things need this. The column draws it, and find has to answer a question no view can: which
+/// *content row* is that word on? A row number is what [`Viewport::reveal`] takes, and a declarative
+/// layout deliberately never tells you where a child landed inside it. Composing the pane twice —
+/// once to draw, once to count — would drift; reading both off one table cannot.
+enum Para {
+    /// The pane's own title, one row, in the accent role.
+    Title(&'static str),
+    /// A section heading, drawn as a rule with the label set into it.
+    Heading(&'static str),
+    /// A paragraph, hard-broken, in the muted role.
+    Body(&'static str),
+    /// The version and licence pair: two rows of fields rather than prose.
+    Facts,
+}
+
+const PANE: [Para; 9] = [
+    Para::Title("conui"),
+    Para::Body(ABOUT),
+    Para::Facts,
+    Para::Heading("LAYERS"),
+    Para::Body(LAYERS),
+    Para::Heading("STATE"),
+    Para::Body(STATE),
+    Para::Heading("SCROLLING"),
+    Para::Body(SCROLLING),
+];
+
+impl Para {
+    /// The view that draws it. Nothing here states a height: a `Text` counts its own lines, a `Rule`
+    /// is one row, and the fitted column adds up its two, which is what keeps [`Para::lines`]
+    /// honest without a number written in both places.
+    fn view(&self) -> Box<dyn View> {
+        match self {
+            Para::Title(text) => Box::new(Text::new(*text).accent()),
+            Para::Heading(text) => Box::new(Rule::titled(*text)),
+            Para::Body(text) => Box::new(Text::new(*text).muted()),
+            Para::Facts => Box::new(
+                Column::new()
+                    .child(Field::new("VERSION", env!("CARGO_PKG_VERSION")).value_column(10))
+                    .child(Field::new("LICENSE", LICENSE).value_column(10))
+                    .fit(),
+            ),
+        }
+    }
+
+    /// The text of each of its rows, for searching. A `Field` is a label and a value on one row, so
+    /// searching either finds it.
+    fn lines(&self) -> Vec<String> {
+        match self {
+            Para::Title(text) | Para::Heading(text) => vec![(*text).to_string()],
+            Para::Body(text) => text.split('\n').map(str::to_owned).collect(),
+            Para::Facts => {
+                vec![format!("VERSION {}", env!("CARGO_PKG_VERSION")), format!("LICENSE {LICENSE}")]
+            }
+        }
+    }
+}
+
+/// Every row of the pane, paired with the content row it falls on.
+fn pane_lines() -> Vec<(u16, String)> {
+    let mut rows = Vec::new();
+    let mut row = 0;
+    for (index, para) in PANE.iter().enumerate() {
+        if index > 0 {
+            row += PANE_GAP;
+        }
+        for line in para.lines() {
+            rows.push((row, line));
+            row += 1;
+        }
+    }
+    rows
+}
+
+/// The content row of the first row containing `needle` at or after `from`, wrapping round the end.
+///
+/// Wrapping is why this returns a row rather than scrolling itself: "the next one, and start again
+/// at the top when you run out" is a decision about the search, and where the pane then has to move
+/// is a decision about the pane. The second one is [`Viewport::reveal`]'s.
+fn find_row(needle: &str, from: u16) -> Option<u16> {
+    let needle = needle.to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    let lines = pane_lines();
+    let matching =
+        |(row, line): &&(u16, String)| line.to_lowercase().contains(&needle) && *row >= from;
+    lines
+        .iter()
+        .find(matching)
+        .or_else(|| lines.iter().find(|(_, line)| line.to_lowercase().contains(&needle)))
+        .map(|(row, _)| *row)
+}
+
 const PALETTES: [&str; 3] = ["LAYA", "EMBER", "INHERIT"];
 const BARS: [&str; 4] = ["Rule", "Shaded", "Blocks", "Smooth"];
 const DENSITY: [&str; 3] = ["Compact", "Comfortable", "Spacious"];
@@ -201,6 +312,17 @@ struct Ui {
     /// window to follow here, so the offset genuinely is the state — and because it is, the wheel
     /// over this pane does what a wheel normally does instead of moving a highlight.
     about: Viewport,
+    /// The find field for the ABOUT pane, and whether it is up.
+    ///
+    /// Modal while it is, for the same reason the open dropdown is: a field that takes keys cannot
+    /// share them with the shortcuts underneath it. `q` and Escape are the two that would bite.
+    finder: Editor,
+    finding: bool,
+    /// The content row the last search landed on, so `n` starts after it rather than finding the
+    /// same word again, and what was searched for, so `n` has something to repeat once the field
+    /// has closed.
+    found: Option<u16>,
+    needle: String,
     /// The last applied values, for the dirty marker and for Revert.
     saved: Values,
     status: String,
@@ -230,6 +352,10 @@ impl Ui {
             density: Dropdown::at(saved.density),
             sidebar: Dropdown::at(saved.sidebar),
             about: Viewport::new(),
+            finder: Editor::new(),
+            finding: false,
+            found: None,
+            needle: String::new(),
             saved,
             status: String::from("ready"),
             status_role: Role::Muted,
@@ -397,6 +523,19 @@ impl Ui {
             }
         }
 
+        // The find field is modal too, and for a plainer reason: every key is a letter while it is
+        // open. Placing it here, below the list and above everything else, is the whole priority
+        // order — there is no z-order to consult and no handler chain to register with.
+        if self.finding {
+            if let Some(key) = event.as_key() {
+                return self.handle_find(key);
+            }
+            if let Event::Paste(text) = event {
+                self.finder.insert_str(text);
+            }
+            return Flow::Continue;
+        }
+
         if let Some(mouse) = event.as_mouse() {
             return self.handle_mouse(mouse);
         }
@@ -448,6 +587,10 @@ impl Ui {
                     KeyCode::PageDown => self.about.page_down(),
                     KeyCode::Home => self.about.top(),
                     KeyCode::End => self.about.bottom(),
+                    KeyCode::Char('/') => self.open_find(),
+                    // Repeat, from just past the last hit. A search that started at the top again
+                    // would sit on the same word for ever.
+                    KeyCode::Char('n') => self.search(self.found.map_or(0, |row| row + 1)),
                     _ => {}
                 }
             }
@@ -481,6 +624,62 @@ impl Ui {
             None => {}
         }
         Flow::Continue
+    }
+
+    /// Put the find field up, empty. The previous needle stays in `needle` for `n`, but is not
+    /// pre-filled here: a field that opens with last time's word in it makes the common case —
+    /// searching for something else — start with a deletion.
+    fn open_find(&mut self) {
+        self.finding = true;
+        self.finder.clear();
+        self.note("type to find, ↵ to go", Role::Info);
+    }
+
+    /// Keys while the find field is up.
+    fn handle_find(&mut self, key: &KeyEvent) -> Flow {
+        match key.code {
+            // Escape closes the field instead of quitting the program. The same key meaning
+            // different things at different depths is not a special case to apologise for; it is
+            // what modality *is*, and the only place that can know which depth we are at is here.
+            KeyCode::Escape => {
+                self.finding = false;
+                self.note("find cancelled", Role::Muted);
+            }
+            KeyCode::Enter => {
+                self.finding = false;
+                self.needle = self.finder.value().to_owned();
+                self.search(0);
+            }
+            _ => {
+                self.finder.handle(key);
+            }
+        }
+        Flow::Continue
+    }
+
+    /// Find the needle at or after content row `from` and bring it into view.
+    ///
+    /// [`Viewport::reveal`] rather than an offset: if the word is already on screen the pane must
+    /// not move at all, and if it is not, it should move the least that shows it. Both of those are
+    /// answers about the *last frame* — how tall the pane was, where it had been scrolled to — and
+    /// the viewport is what remembers that. The row, though, is the app's to supply: a layout will
+    /// never tell you which of its rows a word landed on, which is why [`PANE`] exists.
+    fn search(&mut self, from: u16) {
+        if self.needle.is_empty() {
+            self.note("nothing to find", Role::Muted);
+            return;
+        }
+        match find_row(&self.needle, from) {
+            Some(row) => {
+                self.about.reveal(row);
+                self.found = Some(row);
+                self.note(format!("line {}", row + 1), Role::Accent);
+            }
+            None => {
+                self.found = None;
+                self.note(format!("no match: {}", self.needle), Role::Warn);
+            }
+        }
     }
 
     /// A click, resolved against where things were drawn last frame.
@@ -622,23 +821,13 @@ impl Ui {
     /// its region has nothing to scroll. A fitted one adds its children up and asks for *that*, so
     /// [`Scroll`] has two numbers to compare. Every child here reports its own height without being
     /// told: a `Text` counts its lines, a `Rule` is one row, and the nested column adds up its two.
-    fn about_text(&self) -> Column<'_> {
+    ///
+    /// The children come from [`PANE`] rather than being written out here, so that the rows find
+    /// counts and the rows the pane draws are the same rows by construction.
+    fn about_text(&self) -> Column<'static> {
         Column::new()
-            .gap(1)
-            .child(Text::new("conui").accent())
-            .child(Text::new(ABOUT).muted())
-            .child(
-                Column::new()
-                    .child(Field::new("VERSION", env!("CARGO_PKG_VERSION")).value_column(10))
-                    .child(Field::new("LICENSE", "MIT OR Apache-2.0").value_column(10))
-                    .fit(),
-            )
-            .child(Rule::titled("LAYERS"))
-            .child(Text::new(LAYERS).muted())
-            .child(Rule::titled("STATE"))
-            .child(Text::new(STATE).muted())
-            .child(Rule::titled("SCROLLING"))
-            .child(Text::new(SCROLLING).muted())
+            .gap(PANE_GAP)
+            .children(PANE.iter().map(Para::view))
             // A column of clear air between the text and the scrollbar. `Scroll` reserves the bar's
             // column before the content is laid out rather than painting over it afterwards, so
             // without this the rules would run right up against the track and read as joined to it.
@@ -743,19 +932,30 @@ impl Ui {
         }
     }
 
+    /// The footer: a legend for whatever has focus, and the status on the right.
+    ///
+    /// The find field lives here rather than over the pane. A search box is a mode the whole screen
+    /// is in, and the footer is the one row that is never part of the content being searched.
     fn footer(&self) -> Row<'_> {
+        if self.finding {
+            return Row::new()
+                .child(Input::new(&self.finder).prompt("/").placeholder("word").flex(1))
+                .child(Text::new("↵ go   ESC cancel").muted().right().length(FIND_HINT_WIDTH));
+        }
         let hints = match self.focus.current() {
             Some(Id::Tabs) => Hints::new().key("←/→", "tab").key("TAB", "next"),
             Some(Id::Label) => Hints::new().key("TYPE", "edit").key("TAB", "next"),
-            Some(Id::About) => {
-                Hints::new().key("↑/↓", "scroll").key("PGUP/PGDN", "page").key("TAB", "next")
-            }
+            // No PAGE UP/DOWN here, though they work: the pane's own last paragraph lists them, and
+            // the legend has to make room for the two keys nothing else would tell you about.
+            Some(Id::About) => Hints::new().key("↑/↓", "scroll").key("/", "find").key("n", "next"),
             Some(Id::Revert | Id::Apply) => Hints::new().key("↵", "press").key("TAB", "next"),
             _ => Hints::new().key("←/→", "change").key("↵", "open").key("TAB", "next"),
         };
         Row::new()
             .child(hints.key("ESC", "quit").flex(1))
-            .child(Text::new(&self.status).role(self.status_role).right().flex(1))
+            // A length rather than a share: the status is a short phrase, and giving it half the row
+            // takes columns off a legend that has something to say in them.
+            .child(Text::new(&self.status).role(self.status_role).right().length(STATUS_WIDTH))
     }
 }
 
@@ -1270,5 +1470,145 @@ mod tests {
         assert!(rendered.contains("HOME and END"), "got {rendered}");
         let last = rendered.lines().filter(|line| line.contains("HOME and END")).count();
         assert_eq!(last, 1);
+    }
+
+    // ---- Find ----------------------------------------------------------------------------
+
+    /// Open the field, type, and press Enter — the whole gesture, because none of the three steps
+    /// means anything on its own.
+    fn find(ui: &mut Ui, text: &str) {
+        press(ui, KeyCode::Char('/'));
+        for character in text.chars() {
+            press(ui, KeyCode::Char(character));
+        }
+        press(ui, KeyCode::Enter);
+    }
+
+    /// The claim [`PANE`] is there to make: the row numbers find hands to the viewport are the rows
+    /// the column drew. If this ever fails, every search lands a few lines off and it looks like the
+    /// scrolling is wrong rather than the counting.
+    #[test]
+    fn the_table_and_the_drawn_pane_agree_about_which_row_is_which() {
+        let ui = about_tab();
+        let lines = pane_lines();
+        let (last, _) = *lines.last().expect("the pane has rows");
+        assert_eq!(ui.about.content(), last + 1, "the table and the column disagree on height");
+
+        // Tall enough to draw the lot, so every content row is on screen exactly where it belongs.
+        let rendered = screen(&ui, 88, 60);
+        let pane = ui.hits.area_of(Id::About).expect("the pane drew");
+        let rows: Vec<&str> = rendered.lines().collect();
+        for (row, text) in &lines {
+            // The first word, not the whole line: a `Field` spaces its value out to a column and a
+            // `Rule` draws its title inside the line, so the row's text is not its content verbatim.
+            let word = text.split_whitespace().next().expect("a row with something on it");
+            let drawn = rows[usize::from(pane.y + row)];
+            assert!(drawn.contains(word), "content row {row} should hold {word:?}, drew {drawn:?}");
+        }
+    }
+
+    #[test]
+    fn a_word_that_is_already_showing_does_not_move_the_pane() {
+        let mut ui = about_tab();
+        assert!(ui.about.is_at_top());
+        find(&mut ui, "devkit");
+        assert_eq!(ui.found, find_row("devkit", 0));
+        assert_eq!(ui.about.offset(), 0, "the pane jumped to something it was already showing");
+    }
+
+    #[test]
+    fn a_word_below_the_fold_is_scrolled_to_by_the_least_that_shows_it() {
+        let mut ui = about_tab();
+        let row = find_row("HOME and END", 0).expect("the last paragraph mentions them");
+        assert!(row >= ui.about.height(), "the word is already on screen, so this proves nothing");
+
+        // Lower case on purpose: a reader looking for a word should not have to match its shouting.
+        find(&mut ui, "home and end");
+        assert_eq!(ui.found, Some(row));
+        // The least: the word arrives on the bottom row of the pane rather than in the middle of it,
+        // so everything the reader had above it is still there.
+        assert_eq!(ui.about.offset(), row + 1 - ui.about.height());
+        assert!(screen(&ui, 88, 24).contains("HOME and END"));
+    }
+
+    #[test]
+    fn n_carries_on_from_just_past_the_last_hit() {
+        let mut ui = about_tab();
+        find(&mut ui, "the");
+        let first = ui.found.expect("a first hit");
+        press(&mut ui, KeyCode::Char('n'));
+        let second = ui.found.expect("a second hit");
+        assert!(second > first, "n found row {first} again");
+        assert_eq!(Some(second), find_row("the", first + 1));
+    }
+
+    #[test]
+    fn the_search_wraps_rather_than_stopping_at_the_end() {
+        let (last, _) = *pane_lines().last().expect("the pane has rows");
+        let first = find_row("conui", 0).expect("the title is the word");
+        // Asked from past the final row, the only honest answer is the one at the top.
+        assert_eq!(find_row("conui", last + 1), Some(first));
+    }
+
+    #[test]
+    fn escape_closes_the_find_field_rather_than_the_program() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::Char('/'));
+        assert!(ui.finding);
+        assert_eq!(press(&mut ui, KeyCode::Escape), Flow::Continue, "find took the app with it");
+        assert!(!ui.finding);
+        // And with the field gone, Escape is back to meaning what it means everywhere else.
+        assert_eq!(press(&mut ui, KeyCode::Escape), Flow::Quit);
+    }
+
+    #[test]
+    fn the_find_field_takes_the_keys_that_are_shortcuts_underneath_it() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::Char('/'));
+        // `q` quits on this tab and `j` scrolls it. Inside the field they are two letters.
+        assert_eq!(press(&mut ui, KeyCode::Char('q')), Flow::Continue);
+        press(&mut ui, KeyCode::Char('j'));
+        assert_eq!(ui.finder.value(), "qj");
+        assert_eq!(ui.about.offset(), 0, "a letter typed into the field scrolled the pane");
+    }
+
+    #[test]
+    fn a_word_that_is_not_there_says_so_and_leaves_the_pane_where_it_was() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::End);
+        let offset = ui.about.offset();
+        find(&mut ui, "a-word-this-pane-does-not-contain");
+        assert_eq!(ui.found, None);
+        assert_eq!(ui.about.offset(), offset, "a search that found nothing moved the pane anyway");
+        assert!(ui.status.contains("no match"), "the failure was silent: {:?}", ui.status);
+    }
+
+    #[test]
+    fn an_empty_search_is_not_a_match_at_the_top_of_the_document() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::End);
+        let offset = ui.about.offset();
+        find(&mut ui, "");
+        assert_eq!(ui.found, None);
+        assert_eq!(ui.about.offset(), offset, "Enter on an empty field scrolled to row nought");
+    }
+
+    #[test]
+    fn the_footer_becomes_the_find_field_while_it_is_open() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::Char('/'));
+        for character in "layers".chars() {
+            press(&mut ui, KeyCode::Char(character));
+        }
+        let rendered = screen(&ui, 88, 24);
+        assert!(
+            rendered.contains("/ layers"),
+            "the field is not showing what was typed: {rendered}"
+        );
+        assert!(rendered.contains("ESC cancel"));
+
+        // Enter puts the legend back, so the row is a field only while it is one.
+        press(&mut ui, KeyCode::Enter);
+        assert!(!screen(&ui, 88, 24).contains("ESC cancel"));
     }
 }

@@ -119,8 +119,11 @@ commit to it, which a `Role` cannot express and a `Paint` closure can. The whole
 the mouse too: click a tab, a field or a button, click a select to open it, click an option to choose
 it, click anywhere else to dismiss it. The `ABOUT` tab holds more text than fits and scrolls — with
 the wheel, the arrows, `PAGE UP`/`PAGE DOWN`, `HOME` and `END` — while the buttons below it stay put.
-`--dump` takes `--open` and `--tab N` so any state of it can be printed as text, which is how most of
-its tests assert on the layout.
+`/` over that pane opens a find field in the footer and `n` repeats the search: the viewport scrolls
+the least that brings the match into view, and the pane is composed from a table so that the search
+can count the row a word is on — a layout will not tell you that. `--dump` takes `--open` and
+`--tab N` so any state of it can be printed as text, which is how most of its tests assert on the
+layout.
 
 ## Quick start
 
@@ -472,10 +475,11 @@ whatever region I am given" — which is exactly a thing with nothing to scroll.
 
 Bounds belong to the draw. `Viewport::window(height, content)` is called during render, and it is the
 only thing that knows either number, so every method clamps against what the last frame actually
-showed: `scroll`, `page_up`/`page_down`, `top`/`bottom`, `reveal(row)`, and `set_offset` for restoring
-a position you saved. That last one is kept as asked until the first draw — the one moment when
-nothing is known yet — and a pane that outgrows its offset shows the end of the text rather than blank
-rows below it.
+showed: `scroll`, `page_up`/`page_down`, `top`/`bottom`, `reveal(row)` — which moves as little as it
+can, and not at all when the row is already showing, so following a search hit does not cost the
+reader their place — and `set_offset` for restoring a position you saved. That last one is kept as
+asked until the first draw — the one moment when nothing is known yet — and a pane that outgrows its
+offset shows the end of the text rather than blank rows below it.
 
 This is also why the wheel over a `List` moves the *cursor* instead of a window: `Selection::window`
 always scrolls to contain the selection, so an offset nudged on its own is pulled straight back by the
@@ -531,7 +535,7 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 cargo test --workspace                  # 396 unit tests + 18 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 26 more
-cargo test -p conui --example settings  # 35 more
+cargo test -p conui --example settings  # 45 more
 cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
