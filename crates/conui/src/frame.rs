@@ -44,10 +44,12 @@ impl<'a> Frame<'a> {
         self.buffer.area()
     }
 
+    /// The drawable area as columns and rows.
     pub fn size(&self) -> (u16, u16) {
         (self.buffer.width(), self.buffer.height())
     }
 
+    /// The palette this frame draws against.
     pub const fn theme(&self) -> &Theme {
         &self.theme
     }
@@ -117,6 +119,7 @@ impl<'a> Frame<'a> {
         self.cursor = Some(position);
     }
 
+    /// Leave the cursor hidden for this frame, whatever an earlier call asked for.
     pub fn hide_cursor(&mut self) {
         self.cursor = None;
     }
@@ -131,6 +134,12 @@ impl<'a> Frame<'a> {
         self.buffer
     }
 
+    /// The buffer being drawn into, for code that writes cells directly.
+    ///
+    /// Bypasses clipping, which a [`Canvas`] would have done for you, so a bad coordinate here
+    /// lands somewhere else on the screen rather than being dropped.
+    ///
+    /// [`Canvas`]: crate::canvas::Canvas
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         self.buffer
     }
