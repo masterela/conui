@@ -136,16 +136,16 @@ reads the machine once a second.
   CPU  ▂▄▆▇▇▇▆▅▄▄▄▃▃▂▂▂▂▂▂▃▃▃▃▃             34%   MEM  ▄▄▄▅▅▅▅▅▅▄▄▄▄▄▄▄▄▅▅▅▅▄▄  9.1 GB / 16 GB
        ████████░░░░░░░░░░░░░░░░                        █████████████░░░░░░░░░░
 
-  PROCESSES · CPU ↓                                                 MACHINE
-        PID   CPU%       MEM  COMMAND                               CORES                    8
-          0  124.0    1.1 GB  kernel_task                           PROCS                    8
-        182   81.0    742 MB  WindowServer                          SHOWN                    8
-  ›    4821   62.0    205 MB  cargo                                 VIA              a fixture
-       4832   58.0    464 MB  rustc
-        311    7.0     92 MB  mds_stores                            cargo · 4821
-       1204    0.9     12 MB  monitor                               CPU                   62.0
-         97    0.4    6.0 MB  fseventsd                             MEM            205 MB · 1%
-         93      —     31 MB  logd                                  THREADS                  9
+  PROCESSES                                                         MACHINE
+        PID CPU% ↓       MEM COMMAND                                CORES                    8
+          0  124.0    1.1 GB kernel_task                            PROCS                    8
+        182   81.0    742 MB WindowServer                           SHOWN                    8
+  ›    4821   62.0    205 MB cargo                                  VIA              a fixture
+       4832   58.0    464 MB rustc
+        311    7.0     92 MB mds_stores                             cargo · 4821
+       1204    0.9     12 MB monitor                                CPU                   62.0
+         97    0.4    6.0 MB fseventsd                              MEM            205 MB · 1%
+         93      —     31 MB logd                                   THREADS                  9
                                                                     STATE              running
 
   ────────────────────────────────────────────────────────────────────────────────────────────
@@ -157,8 +157,10 @@ cargo run -p conui --example monitor
 ```
 
 Sort by any column with a key or by clicking its heading, `/` to filter by name or pid, `SPACE` to
-freeze the figures while still moving about in them. Two things here that a self-contained demo never
-has to face:
+freeze the figures while still moving about in them. The grid is one `Table`: the widths are stated
+once as constraints, and the heading, the cells, the arrow and the answer to "which column was
+clicked" are all derived from them by `Table::hit_at`. Two things here that a self-contained demo
+never has to face:
 
 **The list re-sorts under the cursor.** A `Selection` holds a row *index*, and an index is a claim
 about an ordering — so the moment a sample arrives with a process somewhere else, the cursor is on

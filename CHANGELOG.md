@@ -36,6 +36,11 @@ ideograph — `{:>7}` counts characters and cannot know. And `Table::hit_at` ret
 `TableHit::Heading(i)` or `TableHit::Row(i)` from one call, replacing a `column_at` function, a
 `Selection::row_at` call and the caller's own arithmetic about how far the heading was indented.
 
+The `monitor` example is built on it, which is how the API was settled. Its three width constants,
+two `format!` strings, hand-rolled `column_at`, second hit region and second mouse handler became one
+`const COLUMNS` and one `hit_at`, with the sort arrow moving off the panel title and onto the column
+it describes.
+
 ### Four examples, each of which tests itself
 
 `snake`, `todo`, `settings` and `monitor` — the last a process monitor that reads a real machine on
