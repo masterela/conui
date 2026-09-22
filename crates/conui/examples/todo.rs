@@ -436,8 +436,11 @@ impl Todo {
             KeyCode::Down => self.selection.down(length),
             KeyCode::Char('k') => self.selection.up(),
             KeyCode::Char('j') => self.selection.down(length),
-            KeyCode::PageUp => self.selection.page_up(10),
-            KeyCode::PageDown => self.selection.page_down(10, length),
+            // No page size: the selection remembers how tall the list drew itself, which is the
+            // real page. The ten that used to be written here was a guess that stayed wrong at
+            // every window size but one.
+            KeyCode::PageUp => self.selection.page_up(),
+            KeyCode::PageDown => self.selection.page_down(length),
             KeyCode::Home | KeyCode::Char('g') => self.selection.first(),
             KeyCode::End | KeyCode::Char('G') => self.selection.last(length),
             KeyCode::Char(' ' | '\t') | KeyCode::Enter => self.toggle(),
@@ -827,6 +830,29 @@ mod tests {
         let rendered = screen(&todo, 84, 12);
         assert!(rendered.contains("publish 0.1 to crates.io"), "got {rendered}");
         assert!(!rendered.contains("wire the focus layer"), "got {rendered}");
+    }
+
+    #[test]
+    fn a_page_is_as_big_as_the_window_the_list_got() {
+        let mut todo = app();
+        todo.tasks =
+            (0..40).map(|n| Task { text: format!("task {n:02}"), done: false }).collect::<Vec<_>>();
+        // A draw is what tells the selection how tall the list is, so the key handler below is
+        // paging by a number this test never has to work out — and nor does the example.
+        let _ = screen(&todo, 84, 16);
+        let page = todo.selection.height() - 1;
+        press(&mut todo, KeyCode::PageDown);
+        assert_eq!(todo.selection.selected(), page);
+
+        // The same key in a taller window moves further, with nothing rebound.
+        let _ = screen(&todo, 84, 30);
+        let taller = todo.selection.height() - 1;
+        assert!(taller > page, "a taller window shows more tasks: {taller} vs {page}");
+        press(&mut todo, KeyCode::PageDown);
+        assert_eq!(todo.selection.selected(), page + taller);
+
+        press(&mut todo, KeyCode::PageUp);
+        assert_eq!(todo.selection.selected(), page, "back up by the window it was drawn in");
     }
 
     #[test]
