@@ -7,8 +7,12 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/aminouzzane/conui"
+repository = "https://github.com/masterela/conui"
+homepage = "https://github.com/masterela/conui"
 authors = ["conui contributors"]
+# Five is the crates.io limit, so they are spent on the words someone would actually search for.
+keywords = ["tui", "terminal", "console", "cli", "ui"]
+categories = ["command-line-interface", "gui"]
 
 [workspace.dependencies]
 conui-cell = { version = "0.1.0", path = "crates/conui-cell" }
