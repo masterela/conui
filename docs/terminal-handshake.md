@@ -237,7 +237,13 @@ cargo run -p conui --example monitor
 - **Click a column heading** — `PID`, `CPU%`, `MEM`. The table sorts by it, and clicking the same one
   again turns it round. Clicking the panel's title row must do **nothing**.
 - **Scroll the wheel over the table.** The cursor moves. Scroll over the meters at the top and
-  nothing happens.
+  nothing happens. The wheel over the scrollbar itself counts as the table, so that works too.
+- **Shrink the window until the process list no longer fits**, so a thumb appears in the column to
+  the right of it, then **drag it**. The table scrolls and the cursor travels with it — the detail
+  pane on the right changes as you drag, which is the whole point of `Selection::scroll_to`. Press
+  the track above and below the thumb: each is one page, not a jump to where you pressed. Drag the
+  pointer well past the bottom of the bar and back: the bar must keep following it rather than
+  sticking at the moment you left the region.
 
 Then the harder screen, which has overlapping regions:
 

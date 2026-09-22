@@ -272,7 +272,9 @@ fn table(monitor: &Monitor) -> impl View + '_ {
             Row::new()
                 .gap(1)
                 .child(list.hit(&monitor.hits, Zone::Table).flex(1))
-                .child(Scrollbar::new(monitor.selection.offset(), shown))
+                .child(
+                    Scrollbar::new(monitor.selection.offset(), shown).hit(&monitor.hits, Zone::Bar),
+                )
                 .flex(1),
         )
 }
@@ -537,6 +539,8 @@ enum Zone {
     Table,
     /// The column headings, for sorting by one.
     Heading,
+    /// The one column beside the table, for dragging the thumb and paging the track.
+    Bar,
 }
 
 struct Monitor {
@@ -560,6 +564,11 @@ struct Monitor {
     /// than recomputed on demand because a [`List`] scrolls itself against it, and that scroll
     /// position is worth keeping.
     selection: Selection,
+    /// How far down the thumb the pointer was when it grabbed it, or `None` when nothing is held.
+    ///
+    /// Without it the thumb would jump so that its top met the pointer on the first drag event,
+    /// which is felt as the list lurching the moment you touch the bar.
+    grab: Option<u16>,
     paused: bool,
     host: String,
     /// When the machine was last asked, or `None` before the first sample.
@@ -581,6 +590,7 @@ impl Monitor {
             mode: Mode::Browse,
             focus: None,
             selection: Selection::new(),
+            grab: None,
             paused: false,
             host: host(),
             sampled: None,
@@ -823,13 +833,24 @@ impl Monitor {
     fn mouse(&mut self, mouse: &MouseEvent) {
         let at = Pos::new(mouse.column, mouse.row);
         match mouse.kind {
+            // A drag belongs to whatever the press grabbed, not to whatever is under the pointer
+            // now. The thumb is one column wide and the hand wanders sideways as it moves down.
+            MouseKind::Drag(MouseButton::Left) => {
+                if let Some(grab) = self.grab {
+                    self.drag_thumb(at, grab);
+                }
+            }
+            MouseKind::Up(MouseButton::Left) => self.grab = None,
             MouseKind::Down(MouseButton::Left) => match self.hits.at(at) {
                 Some(Zone::Table) => self.press_table(at),
                 Some(Zone::Heading) => self.press_heading(at),
+                Some(Zone::Bar) => self.press_bar(at),
                 None => {}
             },
             MouseKind::ScrollUp | MouseKind::ScrollDown => {
-                if self.hits.at(at) != Some(Zone::Table) {
+                // The bar counts as the table here: a wheel over a scrollbar means scroll, and
+                // being a column away from the rows does not make it mean something else.
+                if !matches!(self.hits.at(at), Some(Zone::Table | Zone::Bar)) {
                     return;
                 }
                 let delta = if mouse.kind == MouseKind::ScrollDown { 1 } else { -1 };
@@ -847,6 +868,47 @@ impl Monitor {
         if let Some(row) = self.selection.row_at(area, at, len) {
             self.select(row);
         }
+    }
+
+    /// A press on the scrollbar: grab the thumb, or page the track beside it.
+    ///
+    /// Paging rather than jumping, because the track is where you press when you want the next
+    /// screenful, not to be thrown somewhere else in the list. A bar with nothing to scroll draws no
+    /// thumb, and a press on it does nothing at all.
+    fn press_bar(&mut self, at: Pos) {
+        let Some(area) = self.hits.area_of(Zone::Bar) else { return };
+        let bar = Scrollbar::new(self.selection.offset(), self.visible().len());
+        let Some(thumb) = bar.thumb(area.height) else { return };
+        let row = at.y - area.y;
+        if thumb.contains(&row) {
+            self.grab = Some(row - thumb.start);
+        } else if row < thumb.start {
+            self.selection.page_up();
+            self.remember();
+        } else {
+            self.selection.page_down(self.visible().len());
+            self.remember();
+        }
+    }
+
+    /// Drag the thumb so it goes on sitting `grab` rows below the pointer.
+    ///
+    /// The pointer's row is clamped to the bar rather than discarded: overshooting the end and
+    /// having the list stop responding is what gets called sticky, and reading a pointer past the
+    /// end as a request for the end is the fix.
+    ///
+    /// The selection travels with the view — [`Selection::scroll_to`] brings it to the nearest edge
+    /// of the new window — so the detail pane follows the drag. That is the honest behaviour for a
+    /// list whose scroll position is derived from its cursor: there is no offset here that the
+    /// cursor does not imply.
+    fn drag_thumb(&mut self, at: Pos, grab: u16) {
+        let Some(area) = self.hits.area_of(Zone::Bar) else { return };
+        let len = self.visible().len();
+        let row = at.y.clamp(area.y, area.y + area.height.saturating_sub(1)) - area.y;
+        let offset = Scrollbar::new(self.selection.offset(), len)
+            .offset_at(row.saturating_sub(grab), area.height);
+        self.selection.scroll_to(offset, len);
+        self.remember();
     }
 
     /// A click on the column headings: sort by the column clicked.
@@ -2129,6 +2191,159 @@ mod tests {
         let _ = screen(&monitor, 110, 24);
         wheel(&mut monitor, 105, 2, true); // over the meters
         assert_eq!(monitor.selection.selected(), 0);
+    }
+
+    // ---- The scrollbar -------------------------------------------------------------------
+
+    /// Wide, and short enough that nine processes do not fit in the table — which is the only
+    /// condition under which there is a thumb at all. At 24 rows the fixture fits and the bar
+    /// correctly draws nothing, so a drag test at that size would be testing an empty column.
+    const CRAMPED: (u16, u16) = (110, 14);
+
+    /// Draw at [`CRAMPED`], then send one mouse event. The draw is what puts the bar's region in
+    /// `hits` and the offset in the selection, and a drag resolves against both.
+    fn mouse_at(monitor: &mut Monitor, kind: MouseKind, column: u16, row: u16) {
+        let _ = screen(monitor, CRAMPED.0, CRAMPED.1);
+        monitor.handle(&Event::Mouse(MouseEvent { kind, column, row, modifiers: Modifiers::NONE }));
+    }
+
+    /// The bar's region and its thumb at [`CRAMPED`].
+    fn bar(monitor: &Monitor) -> (Rect, std::ops::Range<u16>) {
+        let _ = screen(monitor, CRAMPED.0, CRAMPED.1);
+        let area = monitor.hits.area_of(Zone::Bar).expect("the bar drew this frame");
+        let thumb = Scrollbar::new(monitor.selection.offset(), monitor.visible().len())
+            .thumb(area.height)
+            .expect("nine processes do not fit in a cramped table");
+        (area, thumb)
+    }
+
+    #[test]
+    fn dragging_the_thumb_scrolls_the_table_and_brings_the_cursor_along() {
+        let mut monitor = app();
+        let (area, thumb) = bar(&monitor);
+        assert_eq!(monitor.selection.offset(), 0, "starts at the top");
+
+        mouse_at(&mut monitor, MouseKind::Down(MouseButton::Left), area.x, area.y + thumb.start);
+        assert_eq!(monitor.grab, Some(0), "the thumb is held, by its top row");
+
+        // All the way to the bottom of the bar.
+        mouse_at(
+            &mut monitor,
+            MouseKind::Drag(MouseButton::Left),
+            area.x,
+            area.y + area.height - 1,
+        );
+        let offset = monitor.selection.offset();
+        assert!(offset > 0, "dragging the thumb down scrolls the table, got offset {offset}");
+        // The cursor came with it, because a list whose window follows its cursor has no offset the
+        // cursor does not imply — and a selection left behind would be dragged back next frame.
+        assert!(
+            monitor.selection.selected() >= offset,
+            "cursor at {} is above the window starting at {offset}",
+            monitor.selection.selected()
+        );
+        // And the focus is the process actually under the cursor now, not the one it started on.
+        assert_eq!(
+            monitor.focus,
+            monitor.visible().get(monitor.selection.selected()).map(|p| p.pid)
+        );
+    }
+
+    #[test]
+    fn a_drag_past_the_end_of_the_bar_asks_for_the_end_rather_than_sticking() {
+        let mut monitor = app();
+        let (area, thumb) = bar(&monitor);
+        mouse_at(&mut monitor, MouseKind::Down(MouseButton::Left), area.x, area.y + thumb.start);
+        mouse_at(&mut monitor, MouseKind::Drag(MouseButton::Left), area.x, area.y + 200);
+        let len = monitor.visible().len();
+        let furthest = len - usize::from(area.height);
+        assert_eq!(
+            monitor.selection.offset(),
+            furthest,
+            "a pointer well past the bar means the last windowful, not a stuck bar"
+        );
+        // The cursor comes to the nearest edge of that window, which is its top — it is dragged
+        // along, not thrown to the end of the list.
+        assert_eq!(monitor.selection.selected(), furthest);
+    }
+
+    #[test]
+    fn a_drag_nothing_grabbed_moves_nothing() {
+        let mut monitor = app();
+        let (area, _) = bar(&monitor);
+        mouse_at(
+            &mut monitor,
+            MouseKind::Drag(MouseButton::Left),
+            area.x,
+            area.y + area.height - 1,
+        );
+        assert_eq!(monitor.selection.offset(), 0, "a drag with no grab is somebody else's drag");
+        assert_eq!(monitor.selection.selected(), 0);
+    }
+
+    #[test]
+    fn releasing_the_button_lets_go_of_the_thumb() {
+        let mut monitor = app();
+        let (area, thumb) = bar(&monitor);
+        mouse_at(&mut monitor, MouseKind::Down(MouseButton::Left), area.x, area.y + thumb.start);
+        mouse_at(&mut monitor, MouseKind::Up(MouseButton::Left), area.x, area.y + thumb.start);
+        assert_eq!(monitor.grab, None);
+        let before = monitor.selection.offset();
+        mouse_at(
+            &mut monitor,
+            MouseKind::Drag(MouseButton::Left),
+            area.x,
+            area.y + area.height - 1,
+        );
+        assert_eq!(monitor.selection.offset(), before, "the hand let go");
+    }
+
+    #[test]
+    fn pressing_the_track_pages_rather_than_jumping() {
+        let mut monitor = app();
+        let (area, thumb) = bar(&monitor);
+        // Below the thumb: a page down, not a leap to wherever the finger landed. A page is the
+        // window less a row of context, so pressing the track twice is what it takes to move the
+        // window off the top at all with only three rows of it.
+        let page = monitor.selection.height() - 1;
+        mouse_at(&mut monitor, MouseKind::Down(MouseButton::Left), area.x, area.y + thumb.end);
+        assert_eq!(monitor.selection.selected(), page, "paged, rather than jumped to the pointer");
+        assert_eq!(monitor.grab, None, "the track is not the thumb");
+
+        let (area, thumb) = bar(&monitor);
+        mouse_at(&mut monitor, MouseKind::Down(MouseButton::Left), area.x, area.y + thumb.end);
+        assert_eq!(monitor.selection.selected(), page * 2);
+
+        // And back up, from the track above the thumb.
+        let (area, thumb) = bar(&monitor);
+        assert!(thumb.start > 0, "the window has moved, so there is track above the thumb");
+        mouse_at(&mut monitor, MouseKind::Down(MouseButton::Left), area.x, area.y);
+        assert_eq!(monitor.selection.selected(), page, "paged back up");
+    }
+
+    #[test]
+    fn the_wheel_over_the_bar_scrolls_the_table_it_belongs_to() {
+        let mut monitor = app();
+        let (area, _) = bar(&monitor);
+        let _ = screen(&monitor, CRAMPED.0, CRAMPED.1);
+        wheel(&mut monitor, area.x, area.y + 1, true);
+        assert_eq!(
+            monitor.selection.selected(),
+            1,
+            "a column away from the rows is still the list"
+        );
+    }
+
+    #[test]
+    fn a_table_with_nothing_to_scroll_has_no_bar_to_press() {
+        // At full height the fixture fits, `Scrollbar` draws nothing, and a press in the column
+        // where a thumb would have been must not page the list.
+        let mut monitor = app();
+        let _ = screen(&monitor, 110, 24);
+        let area = monitor.hits.area_of(Zone::Bar).expect("the region is still recorded");
+        click_at(&mut monitor, area.x, area.y + 1);
+        assert_eq!(monitor.selection.selected(), 0);
+        assert_eq!(monitor.grab, None);
     }
 
     // ---- Formatting ----------------------------------------------------------------------
