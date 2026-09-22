@@ -631,8 +631,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # every public item
 
 The three lower crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build
 warning rather than something a reader discovers on docs.rs. `conui` itself is getting there a module
-at a time: `app`, `canvas`, `frame`, `layout`, `state`, `theme` and `view` carry
-`#[warn(missing_docs)]` and are done; `typography` and `widget` are not yet. A module with the
+at a time: `app`, `canvas`, `frame`, `layout`, `state`, `theme`, `typography` and `view` carry
+`#[warn(missing_docs)]` and are done; only `widget` is left. A module with the
 attribute cannot regress,
 which is the part that matters — the alternative was one enormous change, or a crate-level `allow`
 that would have made the lint decorative.

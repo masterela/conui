@@ -80,6 +80,7 @@ pub mod layout;
 pub mod state;
 #[warn(missing_docs)]
 pub mod theme;
+#[warn(missing_docs)]
 pub mod typography;
 #[warn(missing_docs)]
 pub mod view;
