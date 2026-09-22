@@ -33,23 +33,43 @@ pub enum Color {
 }
 
 impl Color {
+    // The sixteen names the terminal has had since the VT100. Each one is an index into the
+    // user's own theme, not a fixed RGB value — which is the point of naming them at all.
+
+    /// ANSI black, color 0.
     pub const BLACK: Self = Self::Ansi(0);
+    /// ANSI red, color 1.
     pub const RED: Self = Self::Ansi(1);
+    /// ANSI green, color 2.
     pub const GREEN: Self = Self::Ansi(2);
+    /// ANSI yellow, color 3.
     pub const YELLOW: Self = Self::Ansi(3);
+    /// ANSI blue, color 4.
     pub const BLUE: Self = Self::Ansi(4);
+    /// ANSI magenta, color 5.
     pub const MAGENTA: Self = Self::Ansi(5);
+    /// ANSI cyan, color 6.
     pub const CYAN: Self = Self::Ansi(6);
+    /// ANSI white, color 7.
     pub const WHITE: Self = Self::Ansi(7);
+    /// ANSI bright black, color 8.
     pub const BRIGHT_BLACK: Self = Self::Ansi(8);
+    /// ANSI bright red, color 9.
     pub const BRIGHT_RED: Self = Self::Ansi(9);
+    /// ANSI bright green, color 10.
     pub const BRIGHT_GREEN: Self = Self::Ansi(10);
+    /// ANSI bright yellow, color 11.
     pub const BRIGHT_YELLOW: Self = Self::Ansi(11);
+    /// ANSI bright blue, color 12.
     pub const BRIGHT_BLUE: Self = Self::Ansi(12);
+    /// ANSI bright magenta, color 13.
     pub const BRIGHT_MAGENTA: Self = Self::Ansi(13);
+    /// ANSI bright cyan, color 14.
     pub const BRIGHT_CYAN: Self = Self::Ansi(14);
+    /// ANSI bright white, color 15.
     pub const BRIGHT_WHITE: Self = Self::Ansi(15);
 
+    /// A literal 24-bit color. The same as [`Color::Rgb`], spelled as a call.
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self {
         Self::Rgb(r, g, b)
     }

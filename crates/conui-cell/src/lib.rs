@@ -15,6 +15,10 @@
 //! [`conui-term`]: https://docs.rs/conui-term
 //! [`conui`]: https://docs.rs/conui
 
+// An undocumented public item is a promise someone has to read the source to understand, and
+// this crate is the one every other crate's types come from.
+#![warn(missing_docs)]
+
 mod buffer;
 mod cell;
 mod color;
