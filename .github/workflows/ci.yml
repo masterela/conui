@@ -32,7 +32,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install stable
-        run: rustup update stable --no-self-update && rustup default stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add clippy
 
       - name: Versions
         run: cargo --version --verbose && rustc --version --verbose
@@ -41,6 +44,12 @@ jobs:
       # and a library that builds while its examples do not is not much of a library.
       - name: Build
         run: cargo build --workspace --all-targets
+
+      # Clippy on every platform, not only Linux. The first run of this workflow found dead code in
+      # platform/windows.rs that an Ubuntu-only lint job structurally cannot see — and that file is
+      # precisely the one with no local compiler to check it, so this is where lints matter most.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --workspace
@@ -59,23 +68,21 @@ jobs:
           cargo run -q -p conui --example todo -- --dump 78 15
           cargo run -q -p conui --example settings -- --dump 88 24 --tab 2
 
-  lint:
-    name: fmt + clippy
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      # Formatting is the one check that cannot differ by platform, so it runs once.
       - name: Install stable
         run: |
           rustup update stable --no-self-update
           rustup default stable
-          rustup component add rustfmt clippy
+          rustup component add rustfmt
 
       - name: Format
         run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
 
   msrv:
     name: msrv · 1.85
