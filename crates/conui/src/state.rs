@@ -192,6 +192,32 @@ impl Selection {
         }
     }
 
+    /// Put row `offset` at the top of the window, bringing the selection with it.
+    ///
+    /// The counterpart to [`Selection::offset`], and what a draggable scrollbar beside a list needs:
+    /// `Scrollbar::offset_at` turns a pointer row into an offset, and this is what accepts one.
+    ///
+    /// It has to move the selection too, and that is the whole reason this is not a plain
+    /// `set_offset`. [`Selection::window`] scrolls to keep the selection visible, so an offset set on
+    /// its own would be undone by the very next draw — the window would snap back to wherever the
+    /// cursor still was, and the thumb would spring out from under the pointer. So the cursor comes
+    /// along: it moves by the smallest amount that puts it inside the new window, and no further.
+    /// Drag a list's bar and the selection travels with the view, which is the behaviour you would
+    /// have had to write by hand anyway.
+    ///
+    /// Clamped against the height and length of the last draw, like everything else here. Before the
+    /// first draw there is no window to scroll, and this does nothing.
+    pub fn scroll_to(&mut self, offset: usize, len: usize) {
+        let height = self.height.get();
+        if height == 0 || len == 0 {
+            return;
+        }
+        let offset = offset.min(len.saturating_sub(height));
+        self.offset.set(offset);
+        let last = (offset + height - 1).min(len - 1);
+        self.selected = self.selected.clamp(offset, last);
+    }
+
     /// The rows a list of `len` items should draw into `height` rows, scrolling to keep the
     /// selection visible, and recording the offset and the height for next frame.
     pub fn window(&self, height: u16, len: usize) -> Range<usize> {
@@ -1246,6 +1272,96 @@ mod tests {
         let mut empty = Selection::new();
         empty.step(1, 0);
         assert_eq!(empty.selected(), 0);
+    }
+
+    #[test]
+    fn scrolling_to_an_offset_drags_the_selection_into_the_new_window() {
+        let mut selection = Selection::new();
+        selection.window(5, 40);
+        selection.scroll_to(20, 40);
+        assert_eq!(selection.offset(), 20);
+        // The cursor was on row 0, which is now twenty rows above the window: it comes to the
+        // nearest edge and no further.
+        assert_eq!(selection.selected(), 20);
+        // And the next draw leaves both alone, which is the point — an offset the window has to
+        // undo is an offset nobody can drag to.
+        assert_eq!(selection.window(5, 40), 20..25);
+        assert_eq!(selection.offset(), 20);
+    }
+
+    #[test]
+    fn scrolling_leaves_a_selection_that_is_already_in_the_window_alone() {
+        let mut selection = Selection::at(22);
+        selection.window(5, 40);
+        assert_eq!(selection.offset(), 18);
+        selection.scroll_to(20, 40);
+        assert_eq!(selection.selected(), 22, "already visible, so it does not move");
+        assert_eq!(selection.window(5, 40), 20..25);
+    }
+
+    #[test]
+    fn scrolling_past_the_end_stops_at_the_last_windowful() {
+        let mut selection = Selection::new();
+        selection.window(10, 40);
+        selection.scroll_to(999, 40);
+        assert_eq!(selection.offset(), 30, "never blank rows below content");
+        assert_eq!(selection.selected(), 30);
+        assert_eq!(selection.window(10, 40), 30..40);
+    }
+
+    #[test]
+    fn scrolling_a_list_shorter_than_its_window_does_nothing_it_could_regret() {
+        let mut selection = Selection::at(2);
+        selection.window(10, 4);
+        selection.scroll_to(3, 4);
+        assert_eq!(selection.offset(), 0, "there is nowhere to scroll to");
+        assert_eq!(selection.selected(), 2);
+    }
+
+    #[test]
+    fn scrolling_before_the_first_draw_does_nothing() {
+        // No window has been drawn, so no height is known, so there is no scroll to make. Better
+        // than guessing a height and moving the cursor somewhere the user cannot see.
+        let mut selection = Selection::new();
+        selection.scroll_to(20, 40);
+        assert_eq!(selection.offset(), 0);
+        assert_eq!(selection.selected(), 0);
+    }
+
+    #[test]
+    fn scrolling_an_empty_list_is_harmless() {
+        let mut selection = Selection::new();
+        selection.window(5, 0);
+        selection.scroll_to(3, 0);
+        assert_eq!(selection.offset(), 0);
+        assert_eq!(selection.selected(), 0);
+    }
+
+    #[test]
+    fn a_scrollbar_offset_round_trips_through_scroll_to() {
+        // The two halves of a drag, end to end: the bar says which offset a pointer row means, and
+        // the selection accepts it — so the thumb lands where it was dragged rather than near it.
+        use crate::widget::Scrollbar;
+
+        let mut selection = Selection::new();
+        selection.window(10, 40);
+        // Forty rows in ten gives a three-row thumb, so its top can only reach row seven. A
+        // pointer past that is asking for the bottom, and gets it.
+        let furthest = Scrollbar::new(40, 40).thumb(10).expect("it overflows").start;
+        assert_eq!(furthest, 7);
+
+        for row in 0..10u16 {
+            let offset = Scrollbar::new(selection.offset(), 40).offset_at(row, 10);
+            selection.scroll_to(offset, 40);
+            let thumb =
+                Scrollbar::new(selection.offset(), 40).thumb(10).expect("forty rows in ten");
+            assert_eq!(
+                thumb.start,
+                row.min(furthest),
+                "asked for the thumb at {row}, got it at {}",
+                thumb.start
+            );
+        }
     }
 
     #[test]
