@@ -568,7 +568,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # every public item
 ```
 
 The three lower crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build
-warning rather than something a reader discovers on docs.rs.
+warning rather than something a reader discovers on docs.rs. `conui` itself is getting there a module
+at a time: `app`, `canvas`, `frame`, `layout` and `theme` carry `#[warn(missing_docs)]` and are done,
+`state`, `typography`, `view` and `widget` are not yet. A module with the attribute cannot regress,
+which is the part that matters — the alternative was one enormous change, or a crate-level `allow`
+that would have made the lint decorative.
 
 `.github/workflows/ci.yml` runs exactly those commands on `macos-latest`, `ubuntu-latest` and
 `windows-latest`, plus rustfmt once, rustdoc once and a `1.85` MSRV check — a `rust-version` nothing

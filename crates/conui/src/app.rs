@@ -46,6 +46,7 @@ const READ_CHUNK: usize = 4096;
 /// Everything about an app that is decided before the first frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
+    /// The palette every [`Role`] resolves against.
     pub theme: Theme,
     /// How long [`App::poll`] will wait for input before returning so you can redraw.
     ///
@@ -54,6 +55,10 @@ pub struct Config {
     pub tick_rate: Option<Duration>,
     /// Below this size the app's own view is replaced by a resize prompt.
     pub min_size: (u16, u16),
+    /// Whether the terminal reports clicks, drags and the wheel as [`Event::Mouse`].
+    ///
+    /// Off by default, and turned back off on the way out: a terminal left reporting clicks after
+    /// the program exits writes escape sequences into the user's shell.
     pub mouse: bool,
     /// Whether `Ctrl+C` stops the loop.
     ///
@@ -64,10 +69,12 @@ pub struct Config {
 }
 
 impl Config {
+    /// The defaults: the [`Theme::LAYA`] palette, no tick, no mouse, `Ctrl+C` quits.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Draw against this palette.
     pub fn theme(mut self, theme: Theme) -> Self {
         self.theme = theme;
         self
@@ -91,11 +98,13 @@ impl Config {
         self
     }
 
+    /// Show the resize prompt instead of the app's view below this size.
     pub fn min_size(mut self, width: u16, height: u16) -> Self {
         self.min_size = (width, height);
         self
     }
 
+    /// Ask the terminal to report mouse events.
     pub fn mouse(mut self, enabled: bool) -> Self {
         self.mouse = enabled;
         self
@@ -195,6 +204,7 @@ impl App {
         self.running = false;
     }
 
+    /// The configuration this app was started with, including any later `set_` changes.
     pub const fn config(&self) -> &Config {
         &self.config
     }
@@ -207,15 +217,24 @@ impl App {
         self.terminal.force_repaint();
     }
 
+    /// Change the poll deadline while running, or `None` to wait for input indefinitely.
+    ///
+    /// Worth doing when a screen stops animating: a tick the app has nothing to redraw for is a
+    /// wake-up that costs a frame and changes nothing.
     pub fn set_tick_rate(&mut self, rate: Option<Duration>) {
         self.config.tick_rate = rate;
     }
 
+    /// Start or stop mouse reporting while running.
+    ///
+    /// Unlike the rest of `Config`, this one has to reach the terminal to take effect, which is
+    /// why it can fail: the escape sequence has to be written before the next read.
     pub fn set_mouse(&mut self, enabled: bool) -> io::Result<()> {
         self.config.mouse = enabled;
         self.terminal.set_mouse_capture(enabled)
     }
 
+    /// The terminal's current size in columns and rows.
     pub fn size(&self) -> (u16, u16) {
         self.terminal.size()
     }
@@ -236,6 +255,10 @@ impl App {
         self.frames
     }
 
+    /// The terminal underneath, for anything this runner does not wrap.
+    ///
+    /// The escape hatch, and the reason none of the layers above have to be complete: writing
+    /// straight to the terminal is always available, and does not require abandoning [`App`].
     pub fn terminal(&mut self) -> &mut Terminal {
         &mut self.terminal
     }

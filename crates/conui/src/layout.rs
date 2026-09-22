@@ -95,6 +95,7 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// A layout that splits along `direction`, one child per constraint.
     pub fn new(direction: Direction, constraints: impl IntoIterator<Item = Constraint>) -> Self {
         Self {
             direction,
@@ -104,10 +105,12 @@ impl Layout {
         }
     }
 
+    /// Split into columns, left to right.
     pub fn horizontal(constraints: impl IntoIterator<Item = Constraint>) -> Self {
         Self::new(Direction::Horizontal, constraints)
     }
 
+    /// Split into rows, top to bottom.
     pub fn vertical(constraints: impl IntoIterator<Item = Constraint>) -> Self {
         Self::new(Direction::Vertical, constraints)
     }
@@ -125,10 +128,12 @@ impl Layout {
         self
     }
 
+    /// The axis this layout splits along.
     pub fn direction(&self) -> Direction {
         self.direction
     }
 
+    /// The constraints, in the order children will be given their regions.
     pub fn constraints(&self) -> &[Constraint] {
         &self.constraints
     }
