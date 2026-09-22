@@ -1582,13 +1582,13 @@ impl View for Select<'_> {
         if width == 0 || canvas.height() == 0 {
             return;
         }
-        // Record the whole field, not just the text, so the list lines up with the brackets.
-        self.dropdown.set_field(Rect::new(
-            canvas.screen_area().x,
-            canvas.screen_area().y,
-            width,
-            1,
-        ));
+        // Record the whole field, not just the text, so the list lines up with the brackets — and
+        // only the part of it that is on screen, because this rect is also what decides whether a
+        // click landed on the field. A select scrolled out of its pane records nothing and cannot
+        // be clicked; asking a one-row sub-canvas where it ended up is what makes that exact, since
+        // a region above the fold has a negative origin and no `Rect` can hold one.
+        let field = canvas.sub(Rect::new(0, 0, width, 1)).visible_area();
+        self.dropdown.set_field(field);
 
         let open = self.dropdown.is_open();
         let frame_role = if self.focused || open { Role::Accent } else { Role::Dim };
@@ -2397,6 +2397,29 @@ mod tests {
         let mut slot = canvas.sub(Rect::new(6, 2, 12, 1));
         Select::new(&dropdown, ["a"]).render(&mut slot);
         assert_eq!(dropdown.field(), Rect::new(6, 2, 12, 1));
+    }
+
+    #[test]
+    fn a_select_scrolled_out_of_its_pane_records_no_field_to_click() {
+        let dropdown = Dropdown::new();
+        let mut buffer = Buffer::new(30, 6);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        // A pane three rows down the screen, holding content scrolled by four: the select sits on
+        // the first content row, which is now above the pane.
+        let mut pane = canvas.sub(Rect::new(0, 3, 30, 3));
+        let mut content = pane.shifted(0, -4, 30, 9);
+        let mut slot = content.sub(Rect::new(0, 0, 12, 1));
+        Select::new(&dropdown, ["a"]).render(&mut slot);
+        assert!(dropdown.field().is_empty(), "got {:?}", dropdown.field());
+        // The rect a clamp would have produced is row 0 of the screen, three rows above the pane,
+        // where a click would open a list for a field nobody can see.
+        assert!(!dropdown.field().contains(conui_cell::Pos::new(2, 0)));
+
+        // Scrolled to where it does show, it is the field it draws.
+        let mut visible = pane.shifted(0, 0, 30, 9);
+        let mut slot = visible.sub(Rect::new(0, 0, 12, 1));
+        Select::new(&dropdown, ["a"]).render(&mut slot);
+        assert_eq!(dropdown.field(), Rect::new(0, 3, 12, 1));
     }
 
     #[test]
