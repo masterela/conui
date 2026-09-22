@@ -518,7 +518,7 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 |---|---|
 | macOS | Developed and tested here (Apple Silicon, Darwin 25). |
 | Linux | Same `rustix` termios path as macOS; the platform differences are covered but it has not been run on a Linux box yet. |
-| Windows | `crates/conui-term/src/platform/windows.rs` is written against the Console API — `ENABLE_VIRTUAL_TERMINAL_INPUT` and `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, screen-buffer size, a `WaitForSingleObject` readable poll, and mode restore on exit — but **has not been compiled or run**: there is no Windows toolchain on the development machine. Treat it as unverified. |
+| Windows | `crates/conui-term/src/platform/windows.rs` is written against the Console API — `ENABLE_VIRTUAL_TERMINAL_INPUT` and `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, screen-buffer size, a `WaitForSingleObject` readable poll, and mode restore on exit — but **has not been compiled or run**: there is no Windows toolchain on the development machine, and no cross target either. `.github/workflows/ci.yml` exists to answer this — a `windows-latest` job that builds and tests the workspace — but the repository has no remote yet, so it has never run. Treat it as unverified. |
 
 ## Development
 
@@ -530,7 +530,13 @@ cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
 cargo fmt --all                         # rustfmt.toml pins use_small_heuristics = "Max"
+cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+`.github/workflows/ci.yml` runs exactly those commands on `macos-latest`, `ubuntu-latest` and
+`windows-latest`, plus rustfmt, clippy and a `1.85` MSRV check — a `rust-version` nothing verifies is
+one that drifts the first time a newer API looks convenient. The Windows job is the reason the file
+exists: it is the only thing that will compile `platform/windows.rs`.
 
 Test counts by crate: `conui` 259, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 

@@ -1,0 +1,92 @@
+# Builds and tests on the three platforms conui claims to support.
+#
+# The Windows job is the point of this file. `crates/conui-term/src/platform/windows.rs` is written
+# against the Console API but there is no Windows toolchain on the development machine, so until
+# this runs, that file has never been compiled — and a backend that has never been compiled is a
+# guess. Nothing in the suite needs a terminal: a `Frame` owns nothing but a `Buffer`, so every
+# test renders into memory and runs headless on a CI box.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # A backtrace is free here and saves a round trip when something only fails on one platform.
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Every platform reports, rather than the first failure hiding the other two.
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - name: Versions
+        run: cargo --version --verbose && rustc --version --verbose
+
+      # `--all-targets` so the examples compile too: they are where the widgets are actually used,
+      # and a library that builds while its examples do not is not much of a library.
+      - name: Build
+        run: cargo build --workspace --all-targets
+
+      - name: Test
+        run: cargo test --workspace
+
+      # Example tests are separate targets and `--workspace` does not reach them. Both examples
+      # drive their own key and mouse handlers and assert on rendered rows.
+      - name: Test the examples
+        run: |
+          cargo test -p conui --example todo
+          cargo test -p conui --example settings
+
+      # Proof the layout survives the round trip on this platform, not just that the tests pass.
+      - name: Compose a frame
+        run: |
+          cargo run -q -p conui --example snake -- --dump 20
+          cargo run -q -p conui --example todo -- --dump 78 15
+          cargo run -q -p conui --example settings -- --dump 88 24 --tab 2
+
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  msrv:
+    name: msrv · 1.85
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The manifest claims `rust-version = "1.85"`, the first release with edition 2024. A claim
+      # nothing checks is a claim that drifts the first time a newer API looks convenient.
+      - name: Install 1.85
+        run: rustup toolchain install 1.85 --profile minimal --no-self-update
+
+      - name: Check
+        run: cargo +1.85 check --workspace --all-targets

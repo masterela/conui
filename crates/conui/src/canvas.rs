@@ -352,6 +352,10 @@ impl<'a> Canvas<'a> {
     }
 
     /// A bar with an explicit glyph style and separate fill and track colours.
+    // Eight arguments, and each one is a separate fact a caller has to state: where, how much, how
+    // long, drawn how, in what, over what. A params struct would move the noise to the call site
+    // and make this primitive read unlike every other one on the canvas, which are all positional.
+    #[allow(clippy::too_many_arguments)]
     pub fn bar_with(
         &mut self,
         x: i32,
