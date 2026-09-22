@@ -99,6 +99,7 @@ pub trait ViewExt: View + Sized {
         self.constrain(Constraint::Max(cells))
     }
 
+    /// Wrap this view with a constraint of your own, for one the named helpers do not cover.
     fn constrain(self, constraint: Constraint) -> Constrained<Self> {
         Constrained { view: self, constraint }
     }
@@ -179,10 +180,12 @@ pub struct Stack<'a> {
 }
 
 impl<'a> Stack<'a> {
+    /// An empty stack dividing `direction`.
     pub fn new(direction: Direction) -> Self {
         Self { direction, children: Vec::new(), gap: 0, padding: Padding::ZERO, fit: false }
     }
 
+    /// Add a child, after the ones already added.
     pub fn child(mut self, view: impl View + 'a) -> Self {
         self.children.push(Box::new(view));
         self
@@ -222,10 +225,12 @@ impl<'a> Stack<'a> {
         self
     }
 
+    /// How many children it has.
     pub fn len(&self) -> usize {
         self.children.len()
     }
 
+    /// Whether it has no children, and so draws nothing.
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
     }
@@ -276,25 +281,30 @@ impl View for Stack<'_> {
 pub struct Row<'a>(Stack<'a>);
 
 impl<'a> Row<'a> {
+    /// An empty row.
     pub fn new() -> Self {
         Self(Stack::new(Direction::Horizontal))
     }
 
+    /// Add a child to the right of the ones already added.
     pub fn child(mut self, view: impl View + 'a) -> Self {
         self.0 = self.0.child(view);
         self
     }
 
+    /// Add several children at once, for building a row from data.
     pub fn children<V: View + 'a>(mut self, views: impl IntoIterator<Item = V>) -> Self {
         self.0 = self.0.children(views);
         self
     }
 
+    /// Blank columns between neighbouring children.
     pub fn gap(mut self, gap: u16) -> Self {
         self.0 = self.0.gap(gap);
         self
     }
 
+    /// Space inside the row's own region, before its children are laid out.
     pub fn padding(mut self, padding: Padding) -> Self {
         self.0 = self.0.padding(padding);
         self
@@ -326,25 +336,30 @@ impl View for Row<'_> {
 pub struct Column<'a>(Stack<'a>);
 
 impl<'a> Column<'a> {
+    /// An empty column.
     pub fn new() -> Self {
         Self(Stack::new(Direction::Vertical))
     }
 
+    /// Add a child below the ones already added.
     pub fn child(mut self, view: impl View + 'a) -> Self {
         self.0 = self.0.child(view);
         self
     }
 
+    /// Add several children at once, for building a column from data.
     pub fn children<V: View + 'a>(mut self, views: impl IntoIterator<Item = V>) -> Self {
         self.0 = self.0.children(views);
         self
     }
 
+    /// Blank rows between neighbouring children.
     pub fn gap(mut self, gap: u16) -> Self {
         self.0 = self.0.gap(gap);
         self
     }
 
+    /// Space inside the column's own region, before its children are laid out.
     pub fn padding(mut self, padding: Padding) -> Self {
         self.0 = self.0.padding(padding);
         self
@@ -409,6 +424,7 @@ pub struct Scroll<'a, V> {
 }
 
 impl<'a, V: View> Scroll<'a, V> {
+    /// Show `view` through `viewport`, with a scrollbar down the right-hand column.
     pub fn new(viewport: &'a Viewport, view: V) -> Self {
         Self { view, viewport, bar: true }
     }
@@ -458,6 +474,7 @@ impl<V: View> View for Scroll<'_, V> {
 pub struct Spacer;
 
 impl Spacer {
+    /// A spacer. Give it a [`flex`](ViewExt::flex) or a length to say how much room to take.
     pub const fn new() -> Self {
         Self
     }
@@ -496,6 +513,7 @@ pub struct Paint<F> {
 }
 
 impl<F: Fn(&mut Canvas<'_>)> Paint<F> {
+    /// Draw with `body`, which is handed a canvas clipped to this view's region.
     pub const fn new(body: F) -> Self {
         Self { body }
     }
@@ -517,6 +535,7 @@ pub struct When<V> {
 }
 
 impl<V: View> When<V> {
+    /// `view`, drawn only when `condition` holds. The slot is occupied either way.
     pub const fn new(condition: bool, view: V) -> Self {
         Self { condition, view }
     }
@@ -540,6 +559,7 @@ pub struct Fill {
 }
 
 impl Fill {
+    /// Fill the region with `character` in `role`.
     pub const fn new(character: char, role: crate::Role) -> Self {
         Self { character, role }
     }

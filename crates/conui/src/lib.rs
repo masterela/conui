@@ -59,6 +59,10 @@
 //! Pick any level. A program that only wants "print a table with colour" can use `conui_cell`
 //! and its own `print!`; one that wants a full-screen app uses [`App`].
 
+// The three crates underneath already warn for this. A widget builder method whose doc is its own
+// name is the kind of API that reads fine to whoever wrote it and to nobody else.
+#![warn(missing_docs)]
+
 pub mod app;
 pub mod canvas;
 pub mod frame;

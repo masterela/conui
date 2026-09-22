@@ -46,6 +46,7 @@ const READ_CHUNK: usize = 4096;
 /// Everything about an app that is decided before the first frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
+    /// The palette. Every widget names a [`Role`]; this decides what it looks like.
     pub theme: Theme,
     /// How long [`App::poll`] will wait for input before returning so you can redraw.
     ///
@@ -54,6 +55,8 @@ pub struct Config {
     pub tick_rate: Option<Duration>,
     /// Below this size the app's own view is replaced by a resize prompt.
     pub min_size: (u16, u16),
+    /// Whether to ask the terminal for mouse events. Off unless an app wants them: a terminal
+    /// reporting the mouse cannot be used to select text with the mouse.
     pub mouse: bool,
     /// Whether `Ctrl+C` stops the loop.
     ///
@@ -64,10 +67,12 @@ pub struct Config {
 }
 
 impl Config {
+    /// The defaults: `Theme::LAYA`, 60 fps, a 40x10 minimum, no mouse, and `Ctrl+C` quits.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Draw with this palette.
     pub fn theme(mut self, theme: Theme) -> Self {
         self.theme = theme;
         self
@@ -91,11 +96,13 @@ impl Config {
         self
     }
 
+    /// Show a resize prompt below this size, rather than a layout with nowhere to put itself.
     pub fn min_size(mut self, width: u16, height: u16) -> Self {
         self.min_size = (width, height);
         self
     }
 
+    /// Ask the terminal to report mouse events.
     pub fn mouse(mut self, enabled: bool) -> Self {
         self.mouse = enabled;
         self
@@ -195,6 +202,7 @@ impl App {
         self.running = false;
     }
 
+    /// What this app was configured with.
     pub const fn config(&self) -> &Config {
         &self.config
     }
@@ -207,15 +215,18 @@ impl App {
         self.terminal.force_repaint();
     }
 
+    /// Change the tick rate while running, or `None` to stop ticking and wait for input.
     pub fn set_tick_rate(&mut self, rate: Option<Duration>) {
         self.config.tick_rate = rate;
     }
 
+    /// Turn mouse reporting on or off while running.
     pub fn set_mouse(&mut self, enabled: bool) -> io::Result<()> {
         self.config.mouse = enabled;
         self.terminal.set_mouse_capture(enabled)
     }
 
+    /// The terminal's size in cells, as of the last frame or resize.
     pub fn size(&self) -> (u16, u16) {
         self.terminal.size()
     }
@@ -236,6 +247,7 @@ impl App {
         self.frames
     }
 
+    /// The terminal underneath, for a capability query or a sequence this type does not wrap.
     pub fn terminal(&mut self) -> &mut Terminal {
         &mut self.terminal
     }

@@ -44,10 +44,12 @@ impl<'a> Frame<'a> {
         self.buffer.area()
     }
 
+    /// The drawable size in cells, as `(width, height)`.
     pub fn size(&self) -> (u16, u16) {
         (self.buffer.width(), self.buffer.height())
     }
 
+    /// The palette this frame is being drawn with.
     pub const fn theme(&self) -> &Theme {
         &self.theme
     }
@@ -117,6 +119,7 @@ impl<'a> Frame<'a> {
         self.cursor = Some(position);
     }
 
+    /// Leave the terminal's cursor hidden, which is the default for every frame.
     pub fn hide_cursor(&mut self) {
         self.cursor = None;
     }
@@ -131,6 +134,7 @@ impl<'a> Frame<'a> {
         self.buffer
     }
 
+    /// The buffer being drawn into, mutably, for code that writes cells without a canvas.
     pub fn buffer_mut(&mut self) -> &mut Buffer {
         self.buffer
     }

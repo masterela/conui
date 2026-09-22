@@ -56,6 +56,7 @@ impl Clone for Selection {
 }
 
 impl Selection {
+    /// A selection on the first row, scrolled to the top.
     pub fn new() -> Self {
         Self::default()
     }
@@ -65,6 +66,7 @@ impl Selection {
         Self { selected: index, offset: Cell::new(0) }
     }
 
+    /// The selected row.
     pub const fn selected(&self) -> usize {
         self.selected
     }
@@ -74,6 +76,8 @@ impl Selection {
         self.offset.get()
     }
 
+    /// Select a row. Not clamped: the list's length is not this type's business until
+    /// [`Selection::clamp`] or the next draw.
     pub fn set_selected(&mut self, index: usize) {
         self.selected = index;
     }
@@ -86,10 +90,12 @@ impl Selection {
         self.selected = self.selected.min(len.saturating_sub(1));
     }
 
+    /// Up one row, stopping at the first.
     pub fn up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    /// Down one row, stopping at the last of `len`.
     pub fn down(&mut self, len: usize) {
         if self.selected + 1 < len {
             self.selected += 1;
@@ -115,18 +121,22 @@ impl Selection {
         self.selected = (self.selected + 1) % len;
     }
 
+    /// Jump to the first row.
     pub fn first(&mut self) {
         self.selected = 0;
     }
 
+    /// Jump to the last row of `len`.
     pub fn last(&mut self, len: usize) {
         self.selected = len.saturating_sub(1);
     }
 
+    /// Up `rows` rows, stopping at the first.
     pub fn page_up(&mut self, rows: usize) {
         self.selected = self.selected.saturating_sub(rows);
     }
 
+    /// Down `rows` rows, stopping at the last of `len`.
     pub fn page_down(&mut self, rows: usize, len: usize) {
         self.selected = (self.selected + rows).min(len.saturating_sub(1));
     }
@@ -229,6 +239,7 @@ impl Clone for Viewport {
 }
 
 impl Viewport {
+    /// A viewport at the top of its content, knowing nothing about size until the first draw.
     pub fn new() -> Self {
         Self::default()
     }
@@ -258,10 +269,12 @@ impl Viewport {
         self.content.get()
     }
 
+    /// Whether the first row of content is showing.
     pub fn is_at_top(&self) -> bool {
         self.offset.get() == 0
     }
 
+    /// Whether the last row of content is showing.
     pub fn is_at_bottom(&self) -> bool {
         self.offset.get() >= self.overflow()
     }
@@ -298,6 +311,7 @@ impl Viewport {
         self.scroll(-i32::from(self.page()));
     }
 
+    /// Down by a windowful, less one row of overlap.
     pub fn page_down(&self) {
         self.scroll(i32::from(self.page()));
     }
@@ -306,10 +320,12 @@ impl Viewport {
         self.height.get().saturating_sub(1).max(1)
     }
 
+    /// Jump to the first row of content.
     pub fn top(&self) {
         self.offset.set(0);
     }
 
+    /// Jump as far down as the last draw allows.
     pub fn bottom(&self) {
         self.offset.set(self.limit());
     }
@@ -355,6 +371,7 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// An empty editor.
     pub fn new() -> Self {
         Self::default()
     }
@@ -366,6 +383,7 @@ impl Editor {
         Self { value, cursor }
     }
 
+    /// The text being edited.
     pub fn value(&self) -> &str {
         &self.value
     }
@@ -375,6 +393,7 @@ impl Editor {
         self.cursor
     }
 
+    /// Whether there is no text at all.
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
     }
@@ -390,6 +409,7 @@ impl Editor {
         self.cursor = self.value.len();
     }
 
+    /// Empty the field and put the cursor back at the start.
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
@@ -401,6 +421,7 @@ impl Editor {
         std::mem::take(&mut self.value)
     }
 
+    /// Insert one character at the cursor and step over it.
     pub fn insert(&mut self, character: char) {
         self.value.insert(self.cursor, character);
         self.cursor += character.len_utf8();
@@ -456,22 +477,26 @@ impl Editor {
         self.cursor = start;
     }
 
+    /// Left one grapheme, not one byte: `é` is one press, however it is encoded.
     pub fn left(&mut self) {
         if let Some(previous) = self.previous_boundary() {
             self.cursor = previous;
         }
     }
 
+    /// Right one grapheme.
     pub fn right(&mut self) {
         if let Some(next) = self.next_boundary() {
             self.cursor = next;
         }
     }
 
+    /// To the start of the text.
     pub fn home(&mut self) {
         self.cursor = 0;
     }
 
+    /// To the end of the text.
     pub fn end(&mut self) {
         self.cursor = self.value.len();
     }
@@ -627,10 +652,12 @@ impl<T: Copy + PartialEq> Focus<T> {
         }
     }
 
+    /// Focus the first entry in the ring.
     pub fn first(&mut self) {
         self.current = 0;
     }
 
+    /// Focus the last entry in the ring.
     pub fn last(&mut self) {
         self.current = self.ring.len().saturating_sub(1);
     }
@@ -649,14 +676,17 @@ impl<T: Copy + PartialEq> Focus<T> {
             .min(self.ring.len().saturating_sub(1));
     }
 
+    /// The focusable ids, in tab order.
     pub fn ring(&self) -> &[T] {
         &self.ring
     }
 
+    /// How many entries are focusable.
     pub fn len(&self) -> usize {
         self.ring.len()
     }
 
+    /// Whether nothing is focusable, which is a screen with no controls on it.
     pub fn is_empty(&self) -> bool {
         self.ring.is_empty()
     }
@@ -730,6 +760,7 @@ impl<T: Copy> Clone for Hits<T> {
 }
 
 impl<T: Copy> Hits<T> {
+    /// A recorder with nothing in it yet.
     pub fn new() -> Self {
         Self { regions: RefCell::new(Vec::new()) }
     }
@@ -777,6 +808,7 @@ impl<T: Copy> Hits<T> {
         self.regions.borrow().len()
     }
 
+    /// Whether nothing was recorded, which means nothing on screen is clickable.
     pub fn is_empty(&self) -> bool {
         self.regions.borrow().is_empty()
     }
@@ -855,6 +887,7 @@ impl Dropdown {
         self
     }
 
+    /// Whether the list is showing.
     pub const fn is_open(&self) -> bool {
         self.open
     }
@@ -866,6 +899,7 @@ impl Dropdown {
         self.selection.selected()
     }
 
+    /// Highlight a choice. While open this is a preview; [`Dropdown::dismiss`] undoes it.
     pub fn set_selected(&mut self, index: usize) {
         self.selection.set_selected(index);
     }
@@ -875,6 +909,7 @@ impl Dropdown {
         &self.selection
     }
 
+    /// Show the list, remembering the current choice to go back to.
     pub fn open(&mut self) {
         self.open = true;
         self.restore = self.selection.selected();
@@ -891,6 +926,7 @@ impl Dropdown {
         self.selection.set_selected(self.restore);
     }
 
+    /// Open it if closed, commit it if open. What one key on a closed field should do.
     pub fn toggle(&mut self) {
         if self.open {
             self.commit();
@@ -904,6 +940,7 @@ impl Dropdown {
         self.field.get()
     }
 
+    /// Record where the closed field drew itself. Called by the widget during render.
     pub fn set_field(&self, area: Rect) {
         self.field.set(area);
     }

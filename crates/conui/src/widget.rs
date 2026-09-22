@@ -21,9 +21,12 @@ use crate::view::{Stack, View};
 /// Horizontal placement of text within its region.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
+    /// Against the left edge. The default.
     #[default]
     Left,
+    /// Centred, rounding left when the slack is odd.
     Center,
+    /// Against the right edge, which is what makes a column of values line up.
     Right,
 }
 
@@ -43,6 +46,7 @@ pub struct Text {
 }
 
 impl Text {
+    /// A line of text. Embedded newlines make it several, and it asks for a row per line.
     pub fn new(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
@@ -53,6 +57,7 @@ impl Text {
         }
     }
 
+    /// What the text is for; the theme decides the colour.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
@@ -63,10 +68,12 @@ impl Text {
         self.role(Role::Muted)
     }
 
+    /// The accent role: the one thing on screen that should be looked at.
     pub fn accent(self) -> Self {
         self.role(Role::Accent)
     }
 
+    /// The dim role: present, but structure rather than content.
     pub fn dim(self) -> Self {
         self.role(Role::Dim)
     }
@@ -77,15 +84,18 @@ impl Text {
         self
     }
 
+    /// Where the text sits within its region.
     pub fn align(mut self, align: Align) -> Self {
         self.align = align;
         self
     }
 
+    /// Centre each line in the region.
     pub fn centered(self) -> Self {
         self.align(Align::Center)
     }
 
+    /// Push each line against the right edge.
     pub fn right(self) -> Self {
         self.align(Align::Right)
     }
@@ -191,24 +201,29 @@ pub struct Rule {
 }
 
 impl Rule {
+    /// A plain divider.
     pub fn new() -> Self {
         Self { title: None, role: Role::Dim, title_role: Role::Muted, heavy: false }
     }
 
+    /// A divider with a label set into it, which is how a section gets a heading for one row.
     pub fn titled(title: impl Into<String>) -> Self {
         Self { title: Some(title.into()), ..Self::new() }
     }
 
+    /// The line's colour.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
     }
 
+    /// The label's colour.
     pub fn title_role(mut self, role: Role) -> Self {
         self.title_role = role;
         self
     }
 
+    /// Draw the line in the heavy weight, for a divider that separates rather than decorates.
     pub fn heavy(mut self) -> Self {
         self.heavy = true;
         self
@@ -244,6 +259,7 @@ impl View for Rule {
 /// What a gauge prints next to its bar.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Readout {
+    /// Bar only. For a gauge whose number is already written somewhere else.
     None,
     /// `0.42`, matching the reference design's probability columns.
     #[default]
@@ -307,6 +323,7 @@ impl Gauge {
         Self::new(if total > 0.0 { value / total } else { 0.0 })
     }
 
+    /// A label drawn before the bar.
     pub fn label(mut self, label: impl Into<String>) -> Self {
         self.label = Some(label.into());
         self
@@ -326,21 +343,25 @@ impl Gauge {
         self
     }
 
+    /// The filled part's colour.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
     }
 
+    /// The empty part's colour.
     pub fn track(mut self, role: Role) -> Self {
         self.track = role;
         self
     }
 
+    /// Which glyphs the bar is drawn from.
     pub fn style(mut self, style: BarStyle) -> Self {
         self.style = style;
         self
     }
 
+    /// What, if anything, to print after the bar.
     pub fn readout(mut self, readout: Readout) -> Self {
         self.readout = readout;
         self
@@ -423,6 +444,7 @@ pub struct Stat {
 }
 
 impl Stat {
+    /// A label above `value` in block digits, zero-padded to three.
     pub fn new(label: impl Into<String>, value: i64) -> Self {
         Self { label: label.into(), value, digits: 3, role: Role::Accent, label_role: Role::Muted }
     }
@@ -433,11 +455,13 @@ impl Stat {
         self
     }
 
+    /// The number's colour.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
     }
 
+    /// The label's colour.
     pub fn label_role(mut self, role: Role) -> Self {
         self.label_role = role;
         self
@@ -474,6 +498,7 @@ pub struct Sparkline {
 }
 
 impl Sparkline {
+    /// A chart of `values`, scaled to their own maximum.
     pub fn new(values: impl IntoIterator<Item = f32>) -> Self {
         Self { values: values.into_iter().collect(), max: None, role: Role::Info }
     }
@@ -485,6 +510,7 @@ impl Sparkline {
         self
     }
 
+    /// The chart's colour.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
@@ -523,6 +549,7 @@ pub struct Field {
 }
 
 impl Field {
+    /// A label on the left and a value on the right of one row.
     pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -533,11 +560,13 @@ impl Field {
         }
     }
 
+    /// The label's colour.
     pub fn label_role(mut self, role: Role) -> Self {
         self.label_role = role;
         self
     }
 
+    /// The value's colour — danger for a reading that is out of range, say.
     pub fn value_role(mut self, role: Role) -> Self {
         self.value_role = role;
         self
@@ -582,7 +611,9 @@ pub enum Border {
     /// four columns on lines.
     #[default]
     None,
+    /// A light box-drawing frame.
     Line,
+    /// A light frame with rounded corners.
     Rounded,
 }
 
@@ -599,6 +630,7 @@ pub struct Panel<'a> {
 }
 
 impl<'a> Panel<'a> {
+    /// A panel titled `title`, with no frame.
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: Some(title.into()),
@@ -617,31 +649,37 @@ impl<'a> Panel<'a> {
         Self { title: None, ..Self::new("") }
     }
 
+    /// A second line under the title, in a quieter colour.
     pub fn subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
+    /// Whether to draw a frame, and which one.
     pub fn border(mut self, border: Border) -> Self {
         self.border = border;
         self
     }
 
+    /// The title's colour.
     pub fn title_role(mut self, role: Role) -> Self {
         self.title_role = role;
         self
     }
 
+    /// The frame's colour.
     pub fn border_role(mut self, role: Role) -> Self {
         self.border_role = role;
         self
     }
 
+    /// Add a view to the panel's body, below the ones already added.
     pub fn child(mut self, view: impl View + 'a) -> Self {
         self.body = self.body.child(view);
         self
     }
 
+    /// Add several views at once, for building a body from data.
     pub fn children<V: View + 'a>(mut self, views: impl IntoIterator<Item = V>) -> Self {
         self.body = self.body.children(views);
         self
@@ -735,10 +773,12 @@ pub struct Hints {
 }
 
 impl Hints {
+    /// An empty legend. Add items with [`Hints::key`].
     pub fn new() -> Self {
         Self { items: Vec::new(), key_role: Role::Muted, label_role: Role::Muted, spacing: 3 }
     }
 
+    /// Add `key` and what it does, after the items already added.
     pub fn key(mut self, key: impl Into<String>, action: impl Into<String>) -> Self {
         self.items.push((key.into(), action.into()));
         self
@@ -750,12 +790,14 @@ impl Hints {
         self
     }
 
+    /// One colour for both the key names and their descriptions.
     pub fn role(mut self, role: Role) -> Self {
         self.label_role = role;
         self.key_role = role;
         self
     }
 
+    /// Columns between items.
     pub fn spacing(mut self, spacing: u16) -> Self {
         self.spacing = spacing;
         self
@@ -815,6 +857,7 @@ pub struct ListRow {
 }
 
 impl ListRow {
+    /// A row showing `text`, taking its colour from the list.
     pub fn new(text: impl Into<String>) -> Self {
         Self { text: text.into(), role: None, mark: None }
     }
@@ -863,6 +906,8 @@ pub struct List<'a> {
 }
 
 impl<'a> List<'a> {
+    /// A list of rows. A `&str` or a `String` converts into one, so the common case is a
+    /// vector of strings.
     pub fn new<R: Into<ListRow>>(rows: impl IntoIterator<Item = R>) -> Self {
         Self {
             rows: rows.into_iter().map(Into::into).collect(),
@@ -890,11 +935,13 @@ impl<'a> List<'a> {
         self
     }
 
+    /// The colour of an unselected row.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
     }
 
+    /// The colour of the selected row.
     pub fn selected_role(mut self, role: Role) -> Self {
         self.selected_role = role;
         self
@@ -917,10 +964,12 @@ impl<'a> List<'a> {
         self
     }
 
+    /// How many rows it has.
     pub fn len(&self) -> usize {
         self.rows.len()
     }
 
+    /// Whether it has no rows, in which case it draws its [`empty`](List::empty) message.
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
     }
@@ -1020,6 +1069,7 @@ pub struct Scrollbar {
 }
 
 impl Scrollbar {
+    /// A bar for `content` rows of content scrolled to `offset`.
     pub fn new(offset: usize, content: usize) -> Self {
         Self { offset, content, role: Role::Muted, track_role: Role::Dim }
     }
@@ -1030,6 +1080,7 @@ impl Scrollbar {
         self
     }
 
+    /// The track's colour.
     pub fn track_role(mut self, role: Role) -> Self {
         self.track_role = role;
         self
@@ -1100,6 +1151,7 @@ pub struct Input<'a> {
 }
 
 impl<'a> Input<'a> {
+    /// A one-row field showing `editor`'s text and caret.
     pub fn new(editor: &'a Editor) -> Self {
         Self {
             editor,
@@ -1118,11 +1170,13 @@ impl<'a> Input<'a> {
         self
     }
 
+    /// The prompt's colour.
     pub fn prompt_role(mut self, role: Role) -> Self {
         self.prompt_role = role;
         self
     }
 
+    /// The text's colour.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
@@ -1220,6 +1274,7 @@ pub struct Button {
 }
 
 impl Button {
+    /// A button labelled `label`.
     pub fn new(label: impl Into<String>) -> Self {
         Self { label: label.into(), focused: false, enabled: true, role: Role::Text }
     }
@@ -1316,6 +1371,7 @@ pub struct Tabs<'a> {
 }
 
 impl<'a> Tabs<'a> {
+    /// A bar of `labels`, the first one current until given a selection.
     pub fn new<S: Into<String>>(labels: impl IntoIterator<Item = S>) -> Self {
         Self {
             labels: labels.into_iter().map(Into::into).collect(),
@@ -1328,6 +1384,7 @@ impl<'a> Tabs<'a> {
         }
     }
 
+    /// Which tab is current. Yours to move, so one key handler drives the whole bar.
     pub fn selection(mut self, selection: &'a Selection) -> Self {
         self.selection = Some(selection);
         self
@@ -1354,20 +1411,24 @@ impl<'a> Tabs<'a> {
         self
     }
 
+    /// The colour of the tabs that are not current.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
     }
 
+    /// The current tab's colour.
     pub fn selected_role(mut self, role: Role) -> Self {
         self.selected_role = role;
         self
     }
 
+    /// How many tabs there are.
     pub fn len(&self) -> usize {
         self.labels.len()
     }
 
+    /// Whether there are no tabs at all.
     pub fn is_empty(&self) -> bool {
         self.labels.is_empty()
     }
@@ -1447,6 +1508,7 @@ pub struct Select<'a> {
 }
 
 impl<'a> Select<'a> {
+    /// The closed field of `dropdown`, showing whichever of `options` is chosen.
     pub fn new<S: Into<String>>(
         dropdown: &'a Dropdown,
         options: impl IntoIterator<Item = S>,
@@ -1460,11 +1522,13 @@ impl<'a> Select<'a> {
         }
     }
 
+    /// Whether this field is the one the keys are talking to.
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
         self
     }
 
+    /// The chosen value's colour.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
         self
@@ -1537,6 +1601,7 @@ pub struct Menu<'a> {
 }
 
 impl<'a> Menu<'a> {
+    /// A list of `options`, highlighting whichever `selection` points at.
     pub fn new<S: Into<String>>(
         selection: &'a Selection,
         options: impl IntoIterator<Item = S>,
@@ -1549,11 +1614,13 @@ impl<'a> Menu<'a> {
         }
     }
 
+    /// A heading inside the top border.
     pub fn title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
 
+    /// The border's colour.
     pub fn border_role(mut self, role: Role) -> Self {
         self.border_role = role;
         self

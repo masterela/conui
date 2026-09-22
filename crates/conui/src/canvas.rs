@@ -81,14 +81,17 @@ impl<'a> Canvas<'a> {
         Rect::new(x, y, self.width, self.height)
     }
 
+    /// Columns available.
     pub const fn width(&self) -> u16 {
         self.width
     }
 
+    /// Rows available.
     pub const fn height(&self) -> u16 {
         self.height
     }
 
+    /// The palette in force, for code resolving a [`Role`] itself.
     pub const fn theme(&self) -> &Theme {
         &self.theme
     }

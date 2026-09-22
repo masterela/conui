@@ -60,39 +60,66 @@ pub fn large_width(text: &str) -> u16 {
 
 /// Solid and shaded fills, in increasing weight.
 pub mod block {
+    /// A whole cell of ink. The thumb of a scrollbar and the ink of a block digit.
     pub const FULL: char = '█';
+    /// The top half of a cell, which is how a half-block digit gets a horizontal stroke.
     pub const UPPER_HALF: char = '▀';
+    /// The bottom half of a cell.
     pub const LOWER_HALF: char = '▄';
+    /// The left half of a cell.
     pub const LEFT_HALF: char = '▌';
+    /// The right half of a cell.
     pub const RIGHT_HALF: char = '▐';
+    /// 25% ink. The lightest of the three shades.
     pub const LIGHT_SHADE: char = '░';
+    /// 50% ink.
     pub const MEDIUM_SHADE: char = '▒';
+    /// 75% ink, just short of [`FULL`].
     pub const DARK_SHADE: char = '▓';
 }
 
 /// Box-drawing pieces, in light and heavy weights.
 pub mod line {
+    /// `─`
     pub const HORIZONTAL: char = '─';
+    /// `│`
     pub const VERTICAL: char = '│';
+    /// `┌`
     pub const TOP_LEFT: char = '┌';
+    /// `┐`
     pub const TOP_RIGHT: char = '┐';
+    /// `└`
     pub const BOTTOM_LEFT: char = '└';
+    /// `┘`
     pub const BOTTOM_RIGHT: char = '┘';
+    /// `┼`, where two rules meet.
     pub const CROSS: char = '┼';
+    /// `┬`, a rule with a branch going down.
     pub const TEE_DOWN: char = '┬';
+    /// `┴`, a rule with a branch going up.
     pub const TEE_UP: char = '┴';
+    /// `├`, a rule with a branch going right.
     pub const TEE_RIGHT: char = '├';
+    /// `┤`, a rule with a branch going left.
     pub const TEE_LEFT: char = '┤';
 
+    /// `━`, for a rule that should read as a divider rather than a frame.
     pub const HEAVY_HORIZONTAL: char = '━';
+    /// `┃`
     pub const HEAVY_VERTICAL: char = '┃';
 
+    /// `═`
     pub const DOUBLE_HORIZONTAL: char = '═';
+    /// `║`
     pub const DOUBLE_VERTICAL: char = '║';
 
+    /// `╭`, for a panel with rounded corners.
     pub const ROUND_TOP_LEFT: char = '╭';
+    /// `╮`
     pub const ROUND_TOP_RIGHT: char = '╮';
+    /// `╰`
     pub const ROUND_BOTTOM_LEFT: char = '╰';
+    /// `╯`
     pub const ROUND_BOTTOM_RIGHT: char = '╯';
 }
 
@@ -150,18 +177,29 @@ pub mod mark {
     /// Marks the selected row of a list. Reads as a cursor without stealing a whole column
     /// the way `>` does.
     pub const SELECTED: char = '›';
+    /// An item in a list of things, or a spacer between words on a status line.
     pub const BULLET: char = '·';
+    /// A filled marker: something present, on, or current.
     pub const DOT: char = '●';
+    /// A hollow marker: the same thing, absent or off.
     pub const RING: char = '○';
+    /// A marker with more weight than a dot, for the one item that matters.
     pub const DIAMOND: char = '◆';
+    /// There is more above than the region shows.
     pub const ARROW_UP: char = '↑';
+    /// There is more below than the region shows.
     pub const ARROW_DOWN: char = '↓';
+    /// There is more to the left than the region shows.
     pub const ARROW_LEFT: char = '←';
+    /// There is more to the right than the region shows.
     pub const ARROW_RIGHT: char = '→';
+    /// Text was cut to fit. One cell, unlike three full stops.
     pub const ELLIPSIS: char = '…';
     /// Stands in for a value that is absent rather than zero.
     pub const EMPTY: char = '—';
+    /// Done, passing, or on.
     pub const CHECK: char = '✓';
+    /// Failed, or off. A multiplication sign rather than an `x`, which reads as a letter.
     pub const CROSS: char = '✗';
     /// A closed dropdown. Small triangles rather than `v`, which reads as a letter.
     pub const CARET_DOWN: char = '▾';
@@ -170,6 +208,7 @@ pub mod mark {
     /// The sides of a button. The same family as [`SELECTED`], so a focused control and a
     /// selected row look like they belong to one system.
     pub const BUTTON_LEFT: char = '‹';
+    /// The right side of a button.
     pub const BUTTON_RIGHT: char = '›';
     /// Separates items on a status line.
     pub const SEPARATOR: char = '·';

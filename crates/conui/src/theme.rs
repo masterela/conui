@@ -38,14 +38,24 @@ pub enum Role {
 /// A palette plus the rules for using it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
+    /// The window ground, on every cell, so a cleared region is the app's colour and not the
+    /// terminal's.
     pub background: Color,
+    /// Body text.
     pub text: Color,
+    /// Labels and secondary readings.
     pub muted: Color,
+    /// Rules, frames and empty track.
     pub dim: Color,
+    /// The one colour that means "this is the thing".
     pub accent: Color,
+    /// Something the user should look at soon.
     pub warn: Color,
+    /// Something that is wrong now.
     pub danger: Color,
+    /// Neutral emphasis, for data that is not an alert.
     pub info: Color,
+    /// Fills behind content: a board mesh, an inactive panel, a focused button.
     pub surface: Color,
 }
 

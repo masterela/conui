@@ -540,8 +540,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # every public item is documented
 ```
 
-The three lower crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build
-warning rather than something a reader discovers on docs.rs.
+All four crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build warning
+rather than something a reader discovers on docs.rs.
 
 `.github/workflows/ci.yml` runs exactly those commands on `macos-latest`, `ubuntu-latest` and
 `windows-latest`, plus rustfmt once, rustdoc once and a `1.85` MSRV check — a `rust-version` nothing

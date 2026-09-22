@@ -95,6 +95,7 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// A split of `constraints` along `direction`, with no gap and no margin.
     pub fn new(direction: Direction, constraints: impl IntoIterator<Item = Constraint>) -> Self {
         Self {
             direction,
@@ -104,10 +105,12 @@ impl Layout {
         }
     }
 
+    /// A left-to-right split, one constraint per column band.
     pub fn horizontal(constraints: impl IntoIterator<Item = Constraint>) -> Self {
         Self::new(Direction::Horizontal, constraints)
     }
 
+    /// A top-to-bottom split, one constraint per row band.
     pub fn vertical(constraints: impl IntoIterator<Item = Constraint>) -> Self {
         Self::new(Direction::Vertical, constraints)
     }
@@ -125,10 +128,12 @@ impl Layout {
         self
     }
 
+    /// The axis this splits along.
     pub fn direction(&self) -> Direction {
         self.direction
     }
 
+    /// What each child asked for, in order.
     pub fn constraints(&self) -> &[Constraint] {
         &self.constraints
     }
