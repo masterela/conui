@@ -60,39 +60,78 @@ pub fn large_width(text: &str) -> u16 {
 
 /// Solid and shaded fills, in increasing weight.
 pub mod block {
+    /// `█` — the whole cell. The heaviest mark a terminal has.
     pub const FULL: char = '█';
+    /// `▀` — the top half of the cell. Half of the double-resolution pixel grid the large
+    /// digits are drawn on; the other half is [`LOWER_HALF`].
     pub const UPPER_HALF: char = '▀';
+    /// `▄` — the bottom half of the cell.
     pub const LOWER_HALF: char = '▄';
+    /// `▌` — the left half of the cell, which is as close to a half-column as a grid gets.
     pub const LEFT_HALF: char = '▌';
+    /// `▐` — the right half of the cell.
     pub const RIGHT_HALF: char = '▐';
+    /// `░` — a quarter-weight stipple. The track of a [`BarStyle::Shaded`] bar, and the usual
+    /// way to say "this area exists but is empty" without drawing a border round it.
+    ///
+    /// [`BarStyle::Shaded`]: super::BarStyle::Shaded
     pub const LIGHT_SHADE: char = '░';
+    /// `▒` — a half-weight stipple, between [`LIGHT_SHADE`] and [`DARK_SHADE`].
     pub const MEDIUM_SHADE: char = '▒';
+    /// `▓` — a three-quarter-weight stipple, the heaviest fill short of [`FULL`].
     pub const DARK_SHADE: char = '▓';
 }
 
 /// Box-drawing pieces, in light and heavy weights.
+///
+/// The weights do not mix. A light corner against a heavy edge leaves a visible notch in most
+/// fonts, because the two weights are separate glyph families that only happen to share a
+/// block — so a border picks one weight and keeps it.
 pub mod line {
+    /// `─` — a light horizontal edge.
     pub const HORIZONTAL: char = '─';
+    /// `│` — a light vertical edge.
     pub const VERTICAL: char = '│';
+    /// `┌` — a light top-left corner.
     pub const TOP_LEFT: char = '┌';
+    /// `┐` — a light top-right corner.
     pub const TOP_RIGHT: char = '┐';
+    /// `└` — a light bottom-left corner.
     pub const BOTTOM_LEFT: char = '└';
+    /// `┘` — a light bottom-right corner.
     pub const BOTTOM_RIGHT: char = '┘';
+    /// `┼` — a light four-way junction, where a row and a column of a table meet.
     pub const CROSS: char = '┼';
+    /// `┬` — a light tee opening downwards: a column divider leaving the top edge.
     pub const TEE_DOWN: char = '┬';
+    /// `┴` — a light tee opening upwards: a column divider meeting the bottom edge.
     pub const TEE_UP: char = '┴';
+    /// `├` — a light tee opening rightwards: a row divider leaving the left edge.
     pub const TEE_RIGHT: char = '├';
+    /// `┤` — a light tee opening leftwards: a row divider meeting the right edge.
     pub const TEE_LEFT: char = '┤';
 
+    /// `━` — a heavy horizontal edge, and the glyph a [`BarStyle::Rule`] bar is drawn from in
+    /// both its filled and its empty run.
+    ///
+    /// [`BarStyle::Rule`]: super::BarStyle::Rule
     pub const HEAVY_HORIZONTAL: char = '━';
+    /// `┃` — a heavy vertical edge.
     pub const HEAVY_VERTICAL: char = '┃';
 
+    /// `═` — a double horizontal edge. There are no double corners here: doubles are for a rule
+    /// across a pane, not for a box.
     pub const DOUBLE_HORIZONTAL: char = '═';
+    /// `║` — a double vertical edge.
     pub const DOUBLE_VERTICAL: char = '║';
 
+    /// `╭` — a rounded top-left corner, for a light border with the corners softened.
     pub const ROUND_TOP_LEFT: char = '╭';
+    /// `╮` — a rounded top-right corner.
     pub const ROUND_TOP_RIGHT: char = '╮';
+    /// `╰` — a rounded bottom-left corner.
     pub const ROUND_BOTTOM_LEFT: char = '╰';
+    /// `╯` — a rounded bottom-right corner.
     pub const ROUND_BOTTOM_RIGHT: char = '╯';
 }
 
@@ -150,18 +189,35 @@ pub mod mark {
     /// Marks the selected row of a list. Reads as a cursor without stealing a whole column
     /// the way `>` does.
     pub const SELECTED: char = '›';
+    /// `·` — an item in a list, and the lightest mark on this page. The same character as
+    /// [`SEPARATOR`]; the name says which job it is doing.
     pub const BULLET: char = '·';
+    /// `●` — a filled state: on, chosen, present. Pairs with [`RING`].
     pub const DOT: char = '●';
+    /// `○` — an empty state: off, unchosen, absent. Pairs with [`DOT`].
     pub const RING: char = '○';
+    /// `◆` — a marker with more weight than [`DOT`], for the one item that stands apart from a
+    /// set rather than one of several in it.
     pub const DIAMOND: char = '◆';
+    /// `↑` — points up, or says a column is sorted ascending.
     pub const ARROW_UP: char = '↑';
+    /// `↓` — points down, or says a column is sorted descending.
     pub const ARROW_DOWN: char = '↓';
+    /// `←` — points left.
     pub const ARROW_LEFT: char = '←';
+    /// `→` — points right.
     pub const ARROW_RIGHT: char = '→';
+    /// `…` — one cell saying text was cut, where `...` would cost three and could itself be cut
+    /// halfway.
     pub const ELLIPSIS: char = '…';
     /// Stands in for a value that is absent rather than zero.
     pub const EMPTY: char = '—';
+    /// `✓` — done, passing, enabled.
     pub const CHECK: char = '✓';
+    /// `✗` — not done, failing, disabled. Distinct from [`line::CROSS`], which is a table
+    /// junction rather than a verdict.
+    ///
+    /// [`line::CROSS`]: super::line::CROSS
     pub const CROSS: char = '✗';
     /// A closed dropdown. Small triangles rather than `v`, which reads as a letter.
     pub const CARET_DOWN: char = '▾';
@@ -170,6 +226,8 @@ pub mod mark {
     /// The sides of a button. The same family as [`SELECTED`], so a focused control and a
     /// selected row look like they belong to one system.
     pub const BUTTON_LEFT: char = '‹';
+    /// The right-hand side of a button, and the same glyph as [`SELECTED`] — which is why a
+    /// button's closing bracket and a list's cursor point the same way.
     pub const BUTTON_RIGHT: char = '›';
     /// Separates items on a status line.
     pub const SEPARATOR: char = '·';
