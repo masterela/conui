@@ -24,3 +24,11 @@ windows-sys = { workspace = true, features = [
   "Win32_System_Console",
   "Win32_System_Threading",
 ] }
+
+# docs.rs builds on x86_64 Linux and nothing else unless asked, which is the wrong default for the one
+# crate here whose job is to hide a difference between platforms. `SavedMode` is a `Termios` on Unix
+# and a struct of two console mode words on Windows, so a single-target build documents one of them and
+# silently omits the other — a Windows reader gets a page about termios flags and no way to tell that
+# the page is not about their machine. Three targets means three pages and a platform picker.
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
