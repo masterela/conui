@@ -594,7 +594,11 @@ fn data_path() -> Option<PathBuf> {
     if let Some(explicit) = std::env::var_os("CONUI_TODO_FILE") {
         return Some(PathBuf::from(explicit));
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".conui-todo.md"))
+    // `USERPROFILE` is the Windows spelling of the same idea, and a PowerShell session has no
+    // `HOME` — without it the example would quietly run with nowhere to save to.
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join(".conui-todo.md"))
 }
 
 fn read_tasks(path: &Path) -> Vec<Task> {
