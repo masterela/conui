@@ -822,3 +822,565 @@ fn seed_from_clock() -> u64 {
         .map(|since| since.as_nanos() as u64)
         .unwrap_or(0x51ed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Nothing here needs a terminal: the rules are arithmetic, the policy is a pure function of a
+    // board and a seed, and a frame is a `Buffer`. A demo is still a program, and this one is the
+    // milestone the whole kit was built to hit, so it is tested like one.
+
+    /// A board small enough to reason about by hand, seeded so it replays.
+    fn small() -> Game {
+        Game::new(6, 4, 1)
+    }
+
+    /// Replace the snake outright, for the cases that are awkward to reach by playing.
+    fn with_body(game: &mut Game, cells: &[(i32, i32)], food: Option<(i32, i32)>) {
+        game.body = cells.iter().copied().collect();
+        game.food = food;
+    }
+
+    fn screen(session: &Session, width: u16, height: u16) -> Vec<String> {
+        let mut buffer = conui::Buffer::new(width, height);
+        let mut frame = Frame::new(&mut buffer, Theme::LAYA);
+        compose(&mut frame, session);
+        (0..height).map(|row| buffer.row_text(row)).collect()
+    }
+
+    fn cell(rows: &[String], x: i32, y: i32) -> char {
+        rows[y as usize].chars().nth(x as usize).unwrap_or(' ')
+    }
+
+    // ---- Rules
+
+    #[test]
+    fn a_move_that_does_not_eat_keeps_the_snake_the_same_length() {
+        let mut game = small();
+        with_body(&mut game, &[(2, 1), (2, 2), (3, 2)], Some((0, 0)));
+        game.step(Direction::Right);
+        assert_eq!(game.head(), (3, 1));
+        assert_eq!(game.body.len(), 3, "the tail leaves as the head arrives");
+        assert_eq!(game.score, 0);
+        assert!(game.alive);
+    }
+
+    #[test]
+    fn eating_grows_the_snake_scores_and_puts_the_food_somewhere_else() {
+        let mut game = small();
+        with_body(&mut game, &[(2, 1), (2, 2), (3, 2)], Some((3, 1)));
+        game.step(Direction::Right);
+        assert_eq!(game.score, 1);
+        assert_eq!(game.body.len(), 4, "the tail stays put on the step that grows");
+        let food = game.food.expect("a board with room gets new food");
+        assert_ne!(food, (3, 1), "the eaten square is not where the next one appears");
+        assert!(!game.body.contains(&food), "and it never appears under the snake");
+    }
+
+    #[test]
+    fn the_reason_a_move_is_refused_is_named() {
+        let mut game = small();
+        // Head at the top-left corner, facing right, with the body trailing to its right.
+        with_body(&mut game, &[(0, 0), (1, 0), (2, 0), (2, 1)], Some((5, 3)));
+        assert_eq!(game.legal_reason(Direction::Left), "wall");
+        assert_eq!(game.legal_reason(Direction::Up), "wall");
+        assert_eq!(game.legal_reason(Direction::Right), "reverse", "that square is the neck");
+        assert_eq!(game.legal_reason(Direction::Down), "legal");
+    }
+
+    #[test]
+    fn following_the_tail_is_legal_but_eating_first_makes_it_a_collision() {
+        let mut game = small();
+        // A ring of four: the head's right-hand neighbour is its own tail.
+        let ring = [(1, 1), (1, 2), (2, 2), (2, 1)];
+
+        with_body(&mut game, &ring, Some((5, 3)));
+        assert_eq!(
+            game.legal_reason(Direction::Right),
+            "legal",
+            "the tail vacates the square on a step that does not grow"
+        );
+
+        // Same board, except the step grows the snake — so the tail stays and the square is solid.
+        with_body(&mut game, &ring, Some((2, 1)));
+        assert_eq!(game.legal_reason(Direction::Right), "body");
+    }
+
+    #[test]
+    fn walking_into_a_wall_kills_the_snake_rather_than_moving_it() {
+        let mut game = small();
+        with_body(&mut game, &[(0, 0), (1, 0)], Some((5, 3)));
+        game.step(Direction::Left);
+        assert!(!game.alive);
+        assert_eq!(game.head(), (0, 0), "a fatal move is not also applied");
+        assert_eq!(game.body.len(), 2);
+    }
+
+    #[test]
+    fn a_dead_snake_does_not_move_again() {
+        let mut game = small();
+        game.alive = false;
+        let before = game.body.clone();
+        game.step(Direction::Up);
+        game.step(Direction::Down);
+        assert_eq!(game.body, before);
+    }
+
+    #[test]
+    fn food_only_ever_appears_on_an_empty_square() {
+        let mut game = small();
+        with_body(&mut game, &[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)], None);
+        for _ in 0..200 {
+            let food = game.spawn_food().expect("nineteen squares are free");
+            assert!(!game.body.contains(&food));
+            assert!(game.contains(food), "and on the board");
+        }
+    }
+
+    #[test]
+    fn a_full_board_has_nowhere_to_put_food() {
+        let mut game = small();
+        let everywhere: Vec<(i32, i32)> =
+            (0..4).flat_map(|y| (0..6).map(move |x| (x, y))).collect();
+        with_body(&mut game, &everywhere, None);
+        assert_eq!(game.spawn_food(), None, "and says so rather than looping forever");
+    }
+
+    #[test]
+    fn a_pocket_the_snake_has_sealed_off_is_not_reachable() {
+        let mut game = small();
+        // A wall of body down column 1, with the tail tucked out of the way at (2, 3) so that the
+        // wall is solid: the flood fill treats only the *tail* as about to move.
+        with_body(&mut game, &[(1, 0), (1, 1), (1, 2), (1, 3), (2, 3)], Some((4, 0)));
+
+        let (food_found, pocket) = game.reachable((0, 0));
+        assert_eq!(pocket, 4, "column 0 only: four squares, and the wall holds");
+        assert!(!food_found, "the food is on the other side of the snake");
+
+        let (food_found, open) = game.reachable((2, 0));
+        assert!(food_found, "from the open side the food is there to be had");
+        assert_eq!(open, 16, "columns 2 to 5, including the square the tail is leaving");
+    }
+
+    // ---- The tour the shield reasons over
+
+    #[test]
+    fn the_tour_visits_every_square_once_and_only_steps_to_neighbours() {
+        for (width, height) in [(4, 4), (6, 4), (5, 4), (4, 5), (24, 16)] {
+            let cycle = hamiltonian_cycle(width, height);
+            assert_eq!(cycle.len(), (width * height) as usize, "{width}x{height}: every square");
+
+            let mut seen = std::collections::HashSet::new();
+            for &cell in &cycle {
+                assert!((0..width).contains(&cell.0) && (0..height).contains(&cell.1));
+                assert!(seen.insert(cell), "{width}x{height}: {cell:?} visited twice");
+            }
+
+            // Including the step from the last square back to the first: it is a cycle, and the
+            // shield's arithmetic is modular because of it.
+            for index in 0..cycle.len() {
+                let (x1, y1) = cycle[index];
+                let (x2, y2) = cycle[(index + 1) % cycle.len()];
+                assert_eq!(
+                    (x1 - x2).abs() + (y1 - y2).abs(),
+                    1,
+                    "{width}x{height}: {:?} -> {:?} is not a step",
+                    cycle[index],
+                    cycle[(index + 1) % cycle.len()]
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "at least one dimension must be even")]
+    fn an_odd_by_odd_board_has_no_tour_and_says_so() {
+        hamiltonian_cycle(5, 5);
+    }
+
+    // ---- The shield
+
+    #[test]
+    fn the_shield_keeps_the_snake_alive_until_the_board_is_full() {
+        // The claim the whole right-hand panel makes. A board small enough to finish in a test,
+        // three seeds so it is not one lucky game.
+        for seed in [1u64, 0x5eed, 99] {
+            let mut game = Game::new(6, 4, seed);
+            let mut rng = Rng::new(seed);
+            let mut steps = 0;
+            while game.alive && !game.won && steps < 2000 {
+                let decision = decide(&game, true, &mut rng);
+                game.step(decision.executed);
+                steps += 1;
+            }
+            assert!(game.alive, "seed {seed:#x}: the shield let it die after {steps} steps");
+            assert!(game.won, "seed {seed:#x}: stalled after {steps} steps");
+            assert_eq!(game.body.len(), game.capacity(), "the snake is the board");
+            assert_eq!(game.food, None, "a full board has no room for more food");
+        }
+    }
+
+    #[test]
+    fn without_the_shield_the_policy_dies_which_is_why_the_shield_exists() {
+        // A shield that never changes the outcome would make the panel decorative. The policy is
+        // deliberately only mildly aware of the tour, so unguarded it walks into its own tail.
+        let mut deaths = 0;
+        for seed in [1u64, 0x5eed, 99] {
+            let mut game = Game::new(6, 4, seed);
+            let mut rng = Rng::new(seed);
+            let mut steps = 0;
+            while game.alive && !game.won && steps < 2000 {
+                let decision = decide(&game, false, &mut rng);
+                game.step(decision.executed);
+                steps += 1;
+            }
+            if !game.alive {
+                deaths += 1;
+            }
+        }
+        assert_eq!(deaths, 3, "unguarded play survived, so the comparison on screen is empty");
+    }
+
+    #[test]
+    fn the_snake_never_executes_an_illegal_move_while_a_legal_one_exists() {
+        for guarded in [true, false] {
+            let mut game = Game::new(BOARD_WIDTH, BOARD_HEIGHT, 0x5eed);
+            let mut rng = Rng::new(7);
+            for _ in 0..400 {
+                if !game.alive || game.won {
+                    break;
+                }
+                let decision = decide(&game, guarded, &mut rng);
+                let any_legal = Direction::ALL.iter().any(|&d| game.legal_reason(d) == "legal");
+                if any_legal {
+                    assert_eq!(
+                        game.legal_reason(decision.executed),
+                        "legal",
+                        "guarded={guarded}: chose {} into a {}",
+                        decision.executed.label(),
+                        game.legal_reason(decision.executed)
+                    );
+                }
+                // The panel labels an override, so the flag has to mean exactly that.
+                assert_eq!(decision.intervened, decision.executed != decision.proposed);
+                game.step(decision.executed);
+            }
+        }
+    }
+
+    #[test]
+    fn the_shield_is_off_when_it_is_switched_off() {
+        // Unguarded, the executed move is the proposal unless the proposal is outright illegal.
+        let game = Game::new(BOARD_WIDTH, BOARD_HEIGHT, 3);
+        let mut rng = Rng::new(3);
+        for _ in 0..50 {
+            let decision = decide(&game, false, &mut rng);
+            if game.legal_reason(decision.proposed) == "legal" {
+                assert_eq!(decision.executed, decision.proposed);
+                assert!(!decision.intervened);
+            }
+        }
+    }
+
+    #[test]
+    fn the_reported_numbers_are_in_the_range_the_gauges_draw() {
+        let mut game = Game::new(BOARD_WIDTH, BOARD_HEIGHT, 11);
+        let mut rng = Rng::new(11);
+        for _ in 0..300 {
+            if !game.alive || game.won {
+                break;
+            }
+            let decision = decide(&game, true, &mut rng);
+            let total: f32 = decision.probabilities.iter().sum();
+            assert!((total - 1.0).abs() < 1e-4, "probabilities sum to {total}");
+            for probability in decision.probabilities {
+                assert!((0.0..=1.0).contains(&probability), "{probability} is not a probability");
+            }
+            assert!((0.0..=1.0).contains(&decision.dead_end_risk));
+            assert!((0.0..=1.0).contains(&decision.food_reachable));
+            assert!(decision.visited > 0, "a decision that examined nothing is not a decision");
+            game.step(decision.executed);
+        }
+    }
+
+    // ---- The policy's arithmetic
+
+    #[test]
+    fn softmax_is_a_distribution_even_when_one_score_dominates() {
+        let spread = softmax(&[1000.0, -1000.0, 0.0, 0.5], 0.45);
+        let total: f32 = spread.iter().sum();
+        assert!((total - 1.0).abs() < 1e-5, "sums to {total}");
+        assert!(
+            spread.iter().all(|value| value.is_finite()),
+            "subtracting the peak avoids inf/NaN"
+        );
+        assert!(spread[0] > 0.99, "and the dominant score still wins");
+    }
+
+    #[test]
+    fn softmax_of_equal_scores_is_a_flat_distribution() {
+        assert_eq!(softmax(&[1.5; 4], 0.45), [0.25; 4]);
+        // The illegal-move sentinel is -8.0, so four illegal moves must not divide by zero.
+        let all_refused = softmax(&[-8.0; 4], 0.45);
+        assert!(all_refused.iter().all(|value| (value - 0.25).abs() < 1e-6));
+    }
+
+    #[test]
+    fn argmax_takes_the_peak_and_breaks_a_tie_by_order() {
+        assert_eq!(argmax(&[0.1, 0.2, 0.6, 0.1]), Direction::Left);
+        assert_eq!(argmax(&[0.25; 4]), Direction::Up, "the first of equals");
+    }
+
+    #[test]
+    fn jitter_stays_inside_its_magnitude_and_moves_both_ways() {
+        let mut rng = Rng::new(0x5eed);
+        let mut negative = 0;
+        let mut positive = 0;
+        for _ in 0..10_000 {
+            let value = rng.jitter(0.12);
+            assert!((-0.12..=0.12).contains(&value), "{value} escaped the magnitude");
+            if value < 0.0 {
+                negative += 1;
+            } else {
+                positive += 1;
+            }
+        }
+        assert!(negative > 4_000 && positive > 4_000, "{negative} down, {positive} up");
+    }
+
+    #[test]
+    fn a_zero_seed_still_generates() {
+        // xorshift is stuck at zero forever, which is why `new` sets the low bit.
+        let mut rng = Rng::new(0);
+        let values: Vec<u64> = (0..8).map(|_| rng.next_u64()).collect();
+        assert!(values.iter().all(|&value| value != 0), "{values:?}");
+        assert_eq!(values.iter().collect::<std::collections::HashSet<_>>().len(), 8);
+    }
+
+    #[test]
+    fn the_same_seed_replays_the_same_game() {
+        let play = |seed: u64| {
+            let mut session = Session::new(seed);
+            let now = Instant::now();
+            for _ in 0..80 {
+                session.step_now(now);
+            }
+            (session.game.body.clone(), session.game.score, session.decision.executed)
+        };
+        assert_eq!(play(0x5eed), play(0x5eed));
+        assert_ne!(play(0x5eed).0, play(0x1234).0, "a different seed is a different game");
+    }
+
+    // ---- Session
+
+    #[test]
+    fn speed_saturates_at_both_ends_rather_than_wrapping() {
+        let mut session = Session::new(1);
+        for _ in 0..20 {
+            session.faster();
+        }
+        assert_eq!(session.speed, Session::SPEEDS.len() - 1);
+        assert_eq!(session.interval(), Duration::from_secs(1) / 45);
+
+        for _ in 0..20 {
+            session.slower();
+        }
+        assert_eq!(session.speed, 0, "and no underflow on the way down");
+        assert_eq!(session.interval(), Duration::from_secs(1) / 3);
+    }
+
+    #[test]
+    fn restarting_keeps_the_best_score_and_counts_the_round() {
+        let mut session = Session::new(1);
+        session.game.score = 7;
+        session.restart(true);
+        assert_eq!(session.best, 7, "the best survives the round that set it");
+        assert_eq!(session.game.score, 0);
+        assert_eq!(session.round, 2);
+        assert!(!session.paused, "pressing R unpauses: it is a request to watch");
+
+        session.paused = true;
+        session.restart(false);
+        assert!(session.paused, "but a round ending on its own does not resume for you");
+    }
+
+    #[test]
+    fn a_finished_round_waits_long_enough_to_read_before_restarting() {
+        let mut session = Session::new(1);
+        session.game.alive = false;
+        session.advance();
+        assert_eq!(session.round, 1, "the game over is still on screen");
+        assert!(session.ended.is_some(), "and the clock on it has started");
+
+        session.ended = Instant::now().checked_sub(Session::RESTART_DELAY);
+        session.advance();
+        assert_eq!(session.round, 2);
+        assert!(session.game.alive);
+    }
+
+    #[test]
+    fn a_paused_session_does_not_advance_the_game() {
+        let mut session = Session::new(1);
+        session.paused = true;
+        let before = session.game.body.clone();
+        for _ in 0..50 {
+            session.advance();
+        }
+        assert_eq!(session.game.body, before);
+        assert_eq!(session.state_label(), "PAUSED");
+    }
+
+    #[test]
+    fn the_state_label_says_what_is_actually_on_screen() {
+        let mut session = Session::new(1);
+        assert_eq!(session.state_label(), "LIVE");
+        session.game.alive = false;
+        assert_eq!(session.state_label(), "GAME OVER");
+        session.game.won = true;
+        assert_eq!(session.state_label(), "BOARD CLEAR", "a full board is not a death");
+        session.paused = true;
+        assert_eq!(session.state_label(), "PAUSED", "paused outranks everything");
+    }
+
+    #[test]
+    fn the_decision_rate_counts_the_last_second_and_nothing_older() {
+        let mut session = Session::new(1);
+        session.paused = true;
+        let now = Instant::now();
+        if let Some(stale) = now.checked_sub(Duration::from_secs(3)) {
+            session.recent.push_back(stale);
+        }
+        session.recent.push_back(now);
+        session.advance();
+        assert_eq!(session.decisions_per_second(), 1.0, "the three-second-old step is gone");
+    }
+
+    // ---- The composition
+
+    #[test]
+    fn the_composed_frame_is_the_reference_layout() {
+        let session = Session::new(0x5eed);
+        let rows = screen(&session, LAYOUT_WIDTH, LAYOUT_HEIGHT);
+        assert_eq!(rows.len(), LAYOUT_HEIGHT as usize);
+
+        assert!(rows[1].starts_with("   CONUI  /  LOCAL INTELLIGENCE"));
+        assert!(rows[1].trim_end().ends_with("LIVE"), "{}", rows[1]);
+        assert!(rows[4].starts_with("   S N A K E"));
+        assert!(rows[4].contains("ROUND 01"));
+
+        // The board: a rule of 48 dashes, two columns per square, closed at the bottom.
+        // The right-hand column shares these rows, so the board is matched by prefix.
+        let fence = "─".repeat(48);
+        assert!(rows[TOP as usize].starts_with(&format!("   ┌{fence}┐")), "{}", rows[TOP as usize]);
+        assert!(
+            rows[BOTTOM as usize].starts_with(&format!("   └{fence}┘")),
+            "{}",
+            rows[BOTTOM as usize]
+        );
+
+        assert!(rows[7].contains("NEXT MOVE") && rows[7].contains("POLICY WEIGHTS"));
+        for (index, direction) in Direction::ALL.into_iter().enumerate() {
+            assert!(rows[9 + index].contains(direction.label()), "{}", rows[9 + index]);
+        }
+        assert!(
+            rows[14].contains("EXECUTING") && rows[14].contains(session.decision.executed.label())
+        );
+        assert!(rows[16].contains("DEAD-END RISK"));
+        assert!(rows[19].contains("FOOD REACHABLE"));
+        assert!(rows[22].contains("INFERENCE") && rows[22].contains("ms"));
+        assert!(rows[26].contains("ENGINE") && rows[26].contains("conui · Rust"));
+        assert!(rows[28].contains("conui + cycle safety"));
+        assert!(rows[29].contains("Shield interventions  0000"));
+
+        // Footer: the keys on the left, the policy and a clock on the right.
+        let footer = &rows[LAYOUT_HEIGHT as usize - 2];
+        assert!(footer.contains("SPACE pause") && footer.contains("Q quit"));
+        assert!(footer.contains("LOCAL HEURISTIC POLICY") && footer.trim_end().ends_with("00:00"));
+    }
+
+    #[test]
+    fn exactly_one_move_is_marked_as_the_proposal() {
+        let session = Session::new(0x5eed);
+        let rows = screen(&session, LAYOUT_WIDTH, LAYOUT_HEIGHT);
+        let marked: Vec<&str> = (0..4)
+            .filter(|index| rows[9 + index].contains('›'))
+            .map(|index| Direction::ALL[index].label())
+            .collect();
+        assert_eq!(marked, vec![session.decision.proposed.label()]);
+    }
+
+    #[test]
+    fn the_board_draws_the_snake_two_columns_wide_and_the_food_where_it_is() {
+        let session = Session::new(0x5eed);
+        let rows = screen(&session, LAYOUT_WIDTH, LAYOUT_HEIGHT);
+
+        // Counted inside the board's own columns: the policy gauges to the right are drawn with
+        // the same block glyph on the same rows.
+        let board_rows = (TOP + 1)..=(TOP + BOARD_HEIGHT);
+        let inside = |y: i32, glyph: char| {
+            rows[y as usize]
+                .chars()
+                .skip((LEFT + 1) as usize)
+                .take((BOARD_WIDTH * 2) as usize)
+                .filter(|found| *found == glyph)
+                .count()
+        };
+        let squares: usize = board_rows.clone().map(|y| inside(y, '█')).sum();
+        assert_eq!(squares, session.game.body.len() * 2, "a square is two cells wide");
+
+        let (head_x, head_y) = session.game.head();
+        assert_eq!(cell(&rows, LEFT + 1 + 2 * head_x, TOP + 1 + head_y), '█');
+
+        let (food_x, food_y) = session.game.food.expect("a fresh board has food");
+        assert_eq!(cell(&rows, LEFT + 1 + 2 * food_x, TOP + 1 + food_y), '●');
+
+        // Empty space is the mesh, not blanks: a board you can measure distance on.
+        let mesh: usize = board_rows.map(|y| inside(y, '·')).sum();
+        let board = (BOARD_WIDTH * BOARD_HEIGHT) as usize;
+        assert_eq!(mesh, board - session.game.body.len() - 1, "every square but the snake's own");
+    }
+
+    #[test]
+    fn a_fixed_composition_is_centred_in_a_bigger_window_rather_than_stretched() {
+        let session = Session::new(1);
+        let rows = screen(&session, LAYOUT_WIDTH + 16, LAYOUT_HEIGHT + 6);
+        let header = rows
+            .iter()
+            .position(|row| row.contains("CONUI  /  LOCAL INTELLIGENCE"))
+            .expect("the header is drawn somewhere");
+        assert_eq!(header, 3 + 1, "pushed down by half the spare height");
+        assert_eq!(
+            rows[header].find('C'),
+            Some(8 + LEFT as usize),
+            "and right by half the spare width"
+        );
+    }
+
+    #[test]
+    fn the_header_turns_red_and_says_so_when_the_snake_dies() {
+        let mut session = Session::new(1);
+        session.game.alive = false;
+        let rows = screen(&session, LAYOUT_WIDTH, LAYOUT_HEIGHT);
+        assert!(rows[1].trim_end().ends_with("GAME OVER"), "{}", rows[1]);
+    }
+
+    #[test]
+    fn switching_the_shield_off_is_visible_on_the_panel() {
+        let mut session = Session::new(1);
+        session.guarded = false;
+        let rows = screen(&session, LAYOUT_WIDTH, LAYOUT_HEIGHT);
+        assert!(rows[28].contains("conui · shield OFF"), "{}", rows[28]);
+    }
+
+    #[test]
+    fn a_window_smaller_than_the_composition_clips_instead_of_panicking() {
+        // `App` refuses to draw below `min_size`, but a `Frame` is handed whatever exists, and a
+        // canvas that panicked at the edge would make every absolute coordinate a hazard.
+        let session = Session::new(1);
+        for (width, height) in [(1, 1), (40, 12), (LAYOUT_WIDTH - 1, LAYOUT_HEIGHT - 1)] {
+            let rows = screen(&session, width, height);
+            assert_eq!(rows.len(), height as usize);
+        }
+    }
+}

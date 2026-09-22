@@ -45,10 +45,11 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      # Example tests are separate targets and `--workspace` does not reach them. Both examples
-      # drive their own key and mouse handlers and assert on rendered rows.
+      # Example tests are separate targets and `--workspace` does not reach them. Each example
+      # drives its own handlers and asserts on rendered rows.
       - name: Test the examples
         run: |
+          cargo test -p conui --example snake
           cargo test -p conui --example todo
           cargo test -p conui --example settings
 
