@@ -1,0 +1,26 @@
+[workspace]
+members = ["crates/conui-cell", "crates/conui-term", "crates/conui-input", "crates/conui"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aminouzzane/conui"
+authors = ["conui contributors"]
+
+[workspace.dependencies]
+conui-cell = { version = "0.1.0", path = "crates/conui-cell" }
+conui-term = { version = "0.1.0", path = "crates/conui-term" }
+conui-input = { version = "0.1.0", path = "crates/conui-input" }
+
+unicode-width = "0.2"
+unicode-segmentation = "1.12"
+rustix = { version = "1.1", default-features = false, features = ["std", "termios", "event", "stdio"] }
+windows-sys = "0.61"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
