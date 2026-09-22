@@ -13,7 +13,7 @@ use std::ops::Range;
 use conui_cell::{Padding, Rect, Style};
 
 use crate::canvas::{Canvas, text_width};
-use crate::layout::Constraint;
+use crate::layout::{Constraint, Direction};
 use crate::state::{Dropdown, Editor, Selection, Viewport};
 use crate::theme::Role;
 use crate::typography::{self, BarStyle, DIGIT_HEIGHT, line, mark};
@@ -26,6 +26,16 @@ pub enum Align {
     Left,
     Center,
     Right,
+}
+
+/// The answer for a widget one row tall that takes whatever width it is given, which is most of
+/// them: a gauge, a field, a text input. Saying `Fill(1)` across is not a shrug — it is the honest
+/// answer for something that draws itself to the width it is handed.
+const fn one_row(axis: Direction) -> Constraint {
+    match axis {
+        Direction::Vertical => Constraint::Length(1),
+        Direction::Horizontal => Constraint::Fill(1),
+    }
 }
 
 // ---- Text -------------------------------------------------------------------------------
@@ -121,11 +131,18 @@ impl View for Text {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        if self.wrap {
-            Constraint::Fill(1)
-        } else {
-            Constraint::Length(self.content.split('\n').count() as u16)
+    /// One row per line, and as wide as its widest line. Wrapping trades the first for the second:
+    /// how many rows the text needs then depends on the width it is given, so it asks for a share
+    /// and takes what it gets.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match (axis, self.wrap) {
+            (_, true) => Constraint::Fill(1),
+            (Direction::Vertical, false) => {
+                Constraint::Length(self.content.split('\n').count() as u16)
+            }
+            (Direction::Horizontal, false) => {
+                Constraint::Length(self.content.split('\n').map(text_width).max().unwrap_or(0))
+            }
         }
     }
 }
@@ -235,8 +252,10 @@ impl View for Rule {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(1)
+    /// One row, and as wide as it is given: a divider that stopped short of the edge would read as
+    /// an underline for whatever happened to be above it.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        one_row(axis)
     }
 }
 
@@ -404,8 +423,8 @@ impl View for Gauge {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(1)
+    fn constraint(&self, axis: Direction) -> Constraint {
+        one_row(axis)
     }
 }
 
@@ -457,8 +476,13 @@ impl View for Stat {
         canvas.number(0, 1, self.value, self.digits, self.role);
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(DIGIT_HEIGHT + 1)
+    /// A label above block digits, and exactly as wide as the wider of the two. Both numbers were
+    /// already here — [`Stat::width`] existed so callers could size a row of these by hand.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match axis {
+            Direction::Vertical => Constraint::Length(DIGIT_HEIGHT + 1),
+            Direction::Horizontal => Constraint::Length(self.width()),
+        }
     }
 }
 
@@ -504,8 +528,8 @@ impl View for Sparkline {
         canvas.sparkline(0, 0, visible, max, self.role);
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(1)
+    fn constraint(&self, axis: Direction) -> Constraint {
+        one_row(axis)
     }
 }
 
@@ -568,8 +592,8 @@ impl View for Field {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(1)
+    fn constraint(&self, axis: Direction) -> Constraint {
+        one_row(axis)
     }
 }
 
@@ -798,8 +822,13 @@ impl View for Hints {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(1)
+    /// One row, and as wide as its items. A legend that has been given less says as much of itself
+    /// as fits, but it can state what it wants — [`Hints::width`] is the same number it draws to.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match axis {
+            Direction::Vertical => Constraint::Length(1),
+            Direction::Horizontal => Constraint::Length(self.width()),
+        }
     }
 }
 
@@ -997,7 +1026,8 @@ impl View for List<'_> {
         }
     }
 
-    fn constraint(&self) -> Constraint {
+    fn constraint(&self, axis: Direction) -> Constraint {
+        let _ = axis;
         Constraint::Fill(1)
     }
 }
@@ -1121,6 +1151,14 @@ impl Scrollbar {
 }
 
 impl View for Scrollbar {
+    /// One column, and as tall as it is given: the bar is the height of whatever it is beside.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match axis {
+            Direction::Horizontal => Constraint::Length(1),
+            Direction::Vertical => Constraint::Fill(1),
+        }
+    }
+
     fn render(&self, canvas: &mut Canvas<'_>) {
         let height = canvas.height();
         let Some(thumb) = self.thumb(height) else { return };
@@ -1234,8 +1272,8 @@ impl View for Input<'_> {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(1)
+    fn constraint(&self, axis: Direction) -> Constraint {
+        one_row(axis)
     }
 }
 
@@ -1338,8 +1376,14 @@ impl View for Button {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(1)
+    /// One row, and the width of its label plus its brackets — a button is the one control here
+    /// with an intrinsic width, which is why `Button::width` existed before this method could ask
+    /// for it.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match axis {
+            Direction::Vertical => Constraint::Length(1),
+            Direction::Horizontal => Constraint::Length(Self::width(&self.label)),
+        }
     }
 }
 
@@ -1470,8 +1514,12 @@ impl View for Tabs<'_> {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(if self.underline { 2 } else { 1 })
+    /// Two rows with the underline, one without, and the width of every label and gap.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match axis {
+            Direction::Vertical => Constraint::Length(if self.underline { 2 } else { 1 }),
+            Direction::Horizontal => Constraint::Length(self.width()),
+        }
     }
 }
 
@@ -1561,8 +1609,12 @@ impl View for Select<'_> {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(1)
+    /// One row, and wide enough for the widest choice it could have to show.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match axis {
+            Direction::Vertical => Constraint::Length(1),
+            Direction::Horizontal => Constraint::Length(Self::width(&self.options)),
+        }
     }
 }
 
@@ -1636,8 +1688,23 @@ impl View for Menu<'_> {
         }
     }
 
-    fn constraint(&self) -> Constraint {
-        Constraint::Length(u16::try_from(self.options.len()).unwrap_or(u16::MAX).saturating_add(2))
+    /// Every option, plus the border it draws around them, on both axes.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        let border = 2;
+        match axis {
+            Direction::Vertical => Constraint::Length(
+                u16::try_from(self.options.len()).unwrap_or(u16::MAX).saturating_add(border),
+            ),
+            Direction::Horizontal => {
+                let widest =
+                    self.options.iter().map(|option| text_width(option)).max().unwrap_or(0);
+                // A title sits in the top border between two cells of frame and a space either
+                // side, so it can need more room than the list under it.
+                let titled =
+                    self.title.as_deref().map_or(0, |title| text_width(title).saturating_add(2));
+                Constraint::Length(widest.max(titled).saturating_add(border))
+            }
+        }
     }
 }
 
@@ -1664,7 +1731,7 @@ mod tests {
     fn text_draws_at_the_origin_and_asks_for_one_row() {
         let text = Text::new("hello");
         assert_eq!(row(&text, 8), "hello   ");
-        assert_eq!(text.constraint(), Constraint::Length(1));
+        assert_eq!(text.constraint(Direction::Vertical), Constraint::Length(1));
     }
 
     #[test]
@@ -1676,7 +1743,7 @@ mod tests {
     #[test]
     fn embedded_newlines_become_rows_and_are_counted() {
         let text = Text::new("one\ntwo");
-        assert_eq!(text.constraint(), Constraint::Length(2));
+        assert_eq!(text.constraint(Direction::Vertical), Constraint::Length(2));
         assert_eq!(rows(&text, 4, 2), ["one ", "two "]);
     }
 
@@ -1684,14 +1751,17 @@ mod tests {
     fn unwrapped_text_is_clipped_rather_than_reflowed() {
         // Clipping keeps the layout stable; reflowing would push everything below it down.
         assert_eq!(row(&Text::new("a long sentence"), 6), "a long");
-        assert_eq!(Text::new("a long sentence").constraint(), Constraint::Length(1));
+        assert_eq!(
+            Text::new("a long sentence").constraint(Direction::Vertical),
+            Constraint::Length(1)
+        );
     }
 
     #[test]
     fn wrapped_text_breaks_on_word_boundaries() {
         let text = Text::new("the quick brown fox").wrapped();
         assert_eq!(rows(&text, 10, 3), ["the quick ", "brown fox ", "          "]);
-        assert_eq!(text.constraint(), Constraint::Fill(1));
+        assert_eq!(text.constraint(Direction::Vertical), Constraint::Fill(1));
     }
 
     #[test]
@@ -1724,7 +1794,7 @@ mod tests {
     fn a_gauge_fills_the_space_between_its_label_and_its_readout() {
         let gauge = Gauge::new(0.5).label("RISK");
         assert_eq!(row(&gauge, 20), "RISK ━━━━━━━━━━ 0.50");
-        assert_eq!(gauge.constraint(), Constraint::Length(1));
+        assert_eq!(gauge.constraint(Direction::Vertical), Constraint::Length(1));
     }
 
     #[test]
@@ -1772,7 +1842,7 @@ mod tests {
     #[test]
     fn a_stat_puts_its_label_above_block_digits() {
         let stat = Stat::new("SCORE", 42);
-        assert_eq!(stat.constraint(), Constraint::Length(4));
+        assert_eq!(stat.constraint(Direction::Vertical), Constraint::Length(4));
         let drawn = rows(&stat, 12, 4);
         assert_eq!(drawn[0], "SCORE       ");
         assert_eq!(drawn[1], "█▀█ █ █ ▀▀█ ");
@@ -1868,7 +1938,7 @@ mod tests {
     fn hints_lay_out_keys_and_actions_on_one_row() {
         let hints = Hints::new().key("Q", "quit").key("R", "reset");
         assert_eq!(row(&hints, 22), "Q quit   R reset      ");
-        assert_eq!(hints.constraint(), Constraint::Length(1));
+        assert_eq!(hints.constraint(Direction::Vertical), Constraint::Length(1));
     }
 
     #[test]
@@ -1892,7 +1962,7 @@ mod tests {
     fn a_list_without_a_selection_draws_rows_flush_left() {
         let list = List::new(["milk", "eggs"]);
         assert_eq!(rows(&list, 6, 2), ["milk  ", "eggs  "]);
-        assert_eq!(list.constraint(), Constraint::Fill(1));
+        assert_eq!(list.constraint(Direction::Vertical), Constraint::Fill(1));
     }
 
     #[test]
@@ -2125,7 +2195,7 @@ mod tests {
         let editor = Editor::with("milk");
         let input = Input::new(&editor).prompt(">");
         assert_eq!(row(&input, 10), "> milk    ");
-        assert_eq!(input.constraint(), Constraint::Length(1));
+        assert_eq!(input.constraint(Direction::Vertical), Constraint::Length(1));
     }
 
     #[test]
@@ -2247,7 +2317,7 @@ mod tests {
     fn tabs_underline_the_selected_label_and_nothing_else() {
         let selection = Selection::at(1);
         let tabs = Tabs::new(["ONE", "TWO"]).selection(&selection).focused(true);
-        assert_eq!(tabs.constraint(), Constraint::Length(2));
+        assert_eq!(tabs.constraint(Direction::Vertical), Constraint::Length(2));
         let drawn = rows(&tabs, 12, 2);
         assert_eq!(drawn[0], "ONE   TWO   ");
         assert_eq!(drawn[1], "      \u{2500}\u{2500}\u{2500}   ");
@@ -2299,7 +2369,7 @@ mod tests {
     fn a_one_row_tab_bar_drops_the_underline() {
         let selection = Selection::new();
         let tabs = Tabs::new(["ONE"]).selection(&selection).no_underline();
-        assert_eq!(tabs.constraint(), Constraint::Length(1));
+        assert_eq!(tabs.constraint(Direction::Vertical), Constraint::Length(1));
     }
 
     // ---- Select -------------------------------------------------------------------------
@@ -2393,5 +2463,53 @@ mod tests {
             let drawn = rows(&Menu::new(&selection, ["red"]), width, height);
             assert!(drawn.iter().all(|row| row.trim().is_empty()), "got {drawn:?}");
         }
+    }
+
+    // ---- Per-axis constraints -----------------------------------------------------------
+
+    #[test]
+    fn a_widget_one_row_tall_takes_whatever_width_it_is_given() {
+        // These draw themselves to the width of their region, so `Fill` is the honest answer
+        // across — and answering `Length(1)` to a `Row` would make each a single column wide.
+        let editor = Editor::new();
+        let views: [&dyn View; 3] = [&Rule::new(), &Gauge::new(0.5), &Input::new(&editor)];
+        for view in views {
+            assert_eq!(view.constraint(Direction::Vertical), Constraint::Length(1));
+            assert_eq!(view.constraint(Direction::Horizontal), Constraint::Fill(1));
+        }
+    }
+
+    #[test]
+    fn a_scrollbar_is_one_column_wide_and_as_tall_as_it_is_given() {
+        let bar = Scrollbar::new(0, 40);
+        assert_eq!(bar.constraint(Direction::Horizontal), Constraint::Length(1));
+        assert_eq!(bar.constraint(Direction::Vertical), Constraint::Fill(1));
+    }
+
+    #[test]
+    fn widgets_that_know_their_own_width_report_the_one_they_draw() {
+        // Each of these already had a `width()` for callers to size a slot with by hand; asked
+        // per axis, they can answer with it themselves.
+        let stat = Stat::new("BEST", 5);
+        assert_eq!(stat.constraint(Direction::Horizontal), Constraint::Length(stat.width()));
+        let tabs = Tabs::new(["one", "two"]);
+        assert_eq!(tabs.constraint(Direction::Horizontal), Constraint::Length(tabs.width()));
+        assert_eq!(
+            Button::new("Apply").constraint(Direction::Horizontal),
+            Constraint::Length(Button::width("Apply"))
+        );
+    }
+
+    #[test]
+    fn a_row_of_widgets_lays_itself_out_with_no_widths_written_down() {
+        // What a caller used to write as `.length(Button::width("Save"))` beside every button.
+        let view = crate::view::Row::new()
+            .child(Button::new("Save"))
+            .child(Rule::new())
+            .child(Button::new("Quit"));
+        assert_eq!(
+            row(&view, 20),
+            "\u{2039} Save \u{203a}\u{2500}\u{2500}\u{2500}\u{2500}\u{2039} Quit \u{203a}"
+        );
     }
 }

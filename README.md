@@ -149,11 +149,11 @@ fn main() -> std::io::Result<()> {
                 .child(
                     Row::new()
                         .gap(2)
-                        .child(Stat::new("SCORE", 42).length(4))
+                        .child(Stat::new("SCORE", 42))
                         .child(Gauge::new(0.6).label("LOAD").flex(1))
                         .length(4),
                 )
-                .child(Hints::new().key("Q", "quit").length(1));
+                .child(Hints::new().key("Q", "quit"));
             frame.render_full(&screen);
         })?;
     }
@@ -187,7 +187,7 @@ and `number` — three-row half-block seven-segment digits, the typography that 
 the demo read as instrumentation rather than as text.
 
 **The view tree** is plain values, rebuilt every frame. A `View` is `render(&self, &mut Canvas)`
-plus a `constraint()`; `Row`, `Column`, `Panel` and friends resolve a layout and hand each child a
+plus a `constraint(axis)`; `Row`, `Column`, `Panel` and friends resolve a layout and hand each child a
 *sub-canvas*, which is what makes composition safe — a child that miscalculates cannot corrupt a
 sibling, only its own region.
 
@@ -220,9 +220,15 @@ proportional to current size —
 so the tallest child in an over-subscribed column is the one that loses the most, which is worth
 knowing when you decide what a column asks for.
 
-One sharp edge: a widget's default `constraint()` is its *vertical* preference — `Stat` asks for the
-four rows its block digits need. `Row` reads the same method for a width, so a `Stat` in a `Row`
-gets four columns unless you say `.length(11)`. Give children in a `Row` an explicit width.
+A view is asked what it wants **per axis**, because its two intrinsic sizes are different
+questions: a label is one row tall and as wide as its text, and one number cannot answer both. So
+`constraint(axis)` takes the axis its parent is dividing — a `Stat` says four rows to a `Column` and
+eleven columns to a `Row`, and a `Row` of buttons needs no widths written beside it. A view with no
+intrinsic size along an axis answers `Fill(1)`, an equal share of whatever is spare, which is also
+the default; a `Gauge` answers that across and `Length(1)` down. `.length(n)` and its siblings
+override whichever axis the parent asks about, so the same call means columns in a `Row` and rows in
+a `Column`, and stays useful for what it is actually good at: overriding a view that *does* know its
+size, to line two of them up.
 
 The widget set is small on purpose, and most of them are a few dozen lines over the canvas — which
 is the point: a widget you need that is missing is a `Paint` closure away, not a framework
@@ -321,18 +327,11 @@ impl Screen {
     }
 
     fn view(&self) -> impl View + '_ {
+        // No widths: a `Row` asks each child how wide it is, and both of these know.
         Row::new()
             .gap(2)
-            .child(
-                Select::new(&self.palette, PALETTES)
-                    .focused(self.focus.is(Id::Palette))
-                    .length(Select::width(&PALETTES)),
-            )
-            .child(
-                Button::new("Apply")
-                    .focused(self.focus.is(Id::Apply))
-                    .length(Button::width("Apply")),
-            )
+            .child(Select::new(&self.palette, PALETTES).focused(self.focus.is(Id::Palette)))
+            .child(Button::new("Apply").focused(self.focus.is(Id::Apply)))
     }
 }
 ```
@@ -471,8 +470,8 @@ rows starting two above the window, and the clip — intersected with the parent
 containment still holds — throws away what is out of sight. Nothing is re-laid-out, and the content
 cannot tell it is half off screen.
 
-What makes that possible is content that can state a height. `Scroll` reads the child's
-`constraint()`: `Length(n)` means *n* rows to scroll through, and anything elastic means "I adapt to
+What makes that possible is content that can state a height. `Scroll` asks the child for its
+vertical constraint by name, whatever it is nested in: `Length(n)` means *n* rows to scroll through, and anything elastic means "I adapt to
 whatever region I am given" — which is exactly a thing with nothing to scroll. `Row::fit()` and
 `Column::fit()` are the opt-in, and a fitted stack only adds up if every child is measurable; one
 `Fill` inside and it goes back to asking for a share, because a share of the parent is not a height.
@@ -546,7 +545,7 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace                  # 405 unit tests + 20 doctests
+cargo test --workspace                  # 416 unit tests + 20 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 26 more
 cargo test -p conui --example settings  # 55 more
@@ -564,7 +563,7 @@ just Linux, because the first run of this workflow found dead code in `platform/
 Linux-only lint job structurally cannot see, and that file is the one with no local compiler to check
 it.
 
-Test counts by crate: `conui` 268, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
+Test counts by crate: `conui` 279, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what
