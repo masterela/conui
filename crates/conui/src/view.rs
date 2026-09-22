@@ -102,6 +102,12 @@ pub trait ViewExt: View + Sized {
         self.constrain(Constraint::Max(cells))
     }
 
+    /// Override the parent-axis size with a [`Constraint`] directly.
+    ///
+    /// The others on this trait are named shorthands for it, and are what you want at a call site —
+    /// `.length(6)` reads and `.constrain(Constraint::Length(6))` does not. This is here for the case
+    /// where the constraint is a value rather than a decision: one computed from data, or held in a
+    /// struct, or chosen by a `match`.
     fn constrain(self, constraint: Constraint) -> Constrained<Self> {
         Constrained { view: self, constraint }
     }
@@ -196,10 +202,19 @@ pub struct Stack<'a> {
 }
 
 impl<'a> Stack<'a> {
+    /// An empty stack dividing `direction`, with no gap and no padding.
+    ///
+    /// [`Row::new`] and [`Column::new`] are this with the direction chosen; reach for one of them
+    /// unless the axis is itself a value you are passing around.
     pub fn new(direction: Direction) -> Self {
         Self { direction, children: Vec::new(), gap: 0, padding: Padding::ZERO, fit: false }
     }
 
+    /// Add a child, after any already added.
+    ///
+    /// Order is layout order: the first child is leftmost in a [`Row`] and topmost in a [`Column`].
+    /// The child is boxed, so a stack can hold views of different types without any of them knowing
+    /// about the others.
     pub fn child(mut self, view: impl View + 'a) -> Self {
         self.children.push(Box::new(view));
         self
@@ -239,10 +254,13 @@ impl<'a> Stack<'a> {
         self
     }
 
+    /// How many children have been added.
     pub fn len(&self) -> usize {
         self.children.len()
     }
 
+    /// Whether nothing has been added. An empty stack renders nothing at all rather than dividing
+    /// its region among no one.
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
     }
@@ -310,25 +328,30 @@ impl View for Stack<'_> {
 pub struct Row<'a>(Stack<'a>);
 
 impl<'a> Row<'a> {
+    /// An empty row. Children divide the width; each gets the full height.
     pub fn new() -> Self {
         Self(Stack::new(Direction::Horizontal))
     }
 
+    /// Add a child to the right of the last. See [`Stack::child`].
     pub fn child(mut self, view: impl View + 'a) -> Self {
         self.0 = self.0.child(view);
         self
     }
 
+    /// Add several children at once, left to right. See [`Stack::children`].
     pub fn children<V: View + 'a>(mut self, views: impl IntoIterator<Item = V>) -> Self {
         self.0 = self.0.children(views);
         self
     }
 
+    /// Blank columns between neighbouring children. See [`Stack::gap`].
     pub fn gap(mut self, gap: u16) -> Self {
         self.0 = self.0.gap(gap);
         self
     }
 
+    /// Space inside the row's own region. See [`Stack::padding`].
     pub fn padding(mut self, padding: Padding) -> Self {
         self.0 = self.0.padding(padding);
         self
@@ -360,25 +383,30 @@ impl View for Row<'_> {
 pub struct Column<'a>(Stack<'a>);
 
 impl<'a> Column<'a> {
+    /// An empty column. Children divide the height; each gets the full width.
     pub fn new() -> Self {
         Self(Stack::new(Direction::Vertical))
     }
 
+    /// Add a child below the last. See [`Stack::child`].
     pub fn child(mut self, view: impl View + 'a) -> Self {
         self.0 = self.0.child(view);
         self
     }
 
+    /// Add several children at once, top to bottom. See [`Stack::children`].
     pub fn children<V: View + 'a>(mut self, views: impl IntoIterator<Item = V>) -> Self {
         self.0 = self.0.children(views);
         self
     }
 
+    /// Blank rows between neighbouring children. See [`Stack::gap`].
     pub fn gap(mut self, gap: u16) -> Self {
         self.0 = self.0.gap(gap);
         self
     }
 
+    /// Space inside the column's own region. See [`Stack::padding`].
     pub fn padding(mut self, padding: Padding) -> Self {
         self.0 = self.0.padding(padding);
         self
@@ -443,6 +471,12 @@ pub struct Scroll<'a, V> {
 }
 
 impl<'a, V: View> Scroll<'a, V> {
+    /// Show `view` through `viewport`, with a scrollbar when there is something out of sight.
+    ///
+    /// The viewport is borrowed rather than owned because it is the retained half: this whole view is
+    /// rebuilt every frame, and where the content had got to must outlive that. It is also what the
+    /// key and wheel handlers talk to, so both ends of the scroll — the drawing and the moving — are
+    /// the same object.
     pub fn new(viewport: &'a Viewport, view: V) -> Self {
         Self { view, viewport, bar: true }
     }
@@ -494,6 +528,8 @@ impl<V: View> View for Scroll<'_, V> {
 pub struct Spacer;
 
 impl Spacer {
+    /// A gap. Takes a share of the leftover space by default, like any other view with no intrinsic
+    /// size; put a [`ViewExt::length`] on it for a fixed one.
     pub const fn new() -> Self {
         Self
     }
@@ -532,6 +568,12 @@ pub struct Paint<F> {
 }
 
 impl<F: Fn(&mut Canvas<'_>)> Paint<F> {
+    /// Wrap a drawing closure as a view.
+    ///
+    /// `body` is handed a [`Canvas`] already positioned and clipped to whatever the layout allocated,
+    /// so it draws from `(0, 0)` and cannot reach a sibling however wrong its arithmetic is. It takes
+    /// `&Canvas` by `&self`, which is to say it may not keep anything: like every view, this is a
+    /// value rebuilt each frame, and state belongs to the app.
     pub const fn new(body: F) -> Self {
         Self { body }
     }
@@ -553,6 +595,10 @@ pub struct When<V> {
 }
 
 impl<V: View> When<V> {
+    /// Draw `view` if `condition`, and leave its slot blank otherwise.
+    ///
+    /// The slot is still asked for its size, and it is `view`'s — so a hidden child reserves exactly
+    /// the space it will take when it comes back, and nothing around it moves when it does.
     pub const fn new(condition: bool, view: V) -> Self {
         Self { condition, view }
     }
@@ -576,6 +622,10 @@ pub struct Fill {
 }
 
 impl Fill {
+    /// Every cell of the region set to `character` in `role`.
+    ///
+    /// A debugging instrument more than a widget: one of these in a slot shows exactly what the
+    /// layout gave it, which is the quickest way to find out why something is one column narrow.
     pub const fn new(character: char, role: crate::Role) -> Self {
         Self { character, role }
     }
