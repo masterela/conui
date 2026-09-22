@@ -59,11 +59,25 @@
 //! Pick any level. A program that only wants "print a table with colour" can use `conui_cell`
 //! and its own `print!`; one that wants a full-screen app uses [`App`].
 
+// The three lower crates have warned on an undocumented public item since they were written. This
+// one, the crate almost everybody actually depends on, was the exception — so the items a reader
+// meets first were the least likely to say anything. Publishing 0.1 makes every one of them a
+// promise, and a promise with no sentence attached is one nobody can rely on.
+//
+// The lint goes on a module at a time rather than on the crate, because switching it on everywhere
+// at once would mean either 191 doc comments in one change or `allow` sprinkled over the modules
+// that are not done yet — and an `allow` is how a lint like this quietly stops meaning anything.
+// A module carrying the attribute is finished and cannot regress; the rest are still to do.
+#[warn(missing_docs)]
 pub mod app;
+#[warn(missing_docs)]
 pub mod canvas;
+#[warn(missing_docs)]
 pub mod frame;
+#[warn(missing_docs)]
 pub mod layout;
 pub mod state;
+#[warn(missing_docs)]
 pub mod theme;
 pub mod typography;
 pub mod view;

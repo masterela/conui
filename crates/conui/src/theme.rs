@@ -38,14 +38,23 @@ pub enum Role {
 /// A palette plus the rules for using it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Theme {
+    /// What [`Role::Background`] resolves to.
     pub background: Color,
+    /// What [`Role::Text`] resolves to.
     pub text: Color,
+    /// What [`Role::Muted`] resolves to.
     pub muted: Color,
+    /// What [`Role::Dim`] resolves to.
     pub dim: Color,
+    /// What [`Role::Accent`] resolves to.
     pub accent: Color,
+    /// What [`Role::Warn`] resolves to.
     pub warn: Color,
+    /// What [`Role::Danger`] resolves to.
     pub danger: Color,
+    /// What [`Role::Info`] resolves to.
     pub info: Color,
+    /// What [`Role::Surface`] resolves to.
     pub surface: Color,
 }
 

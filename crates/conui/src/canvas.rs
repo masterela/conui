@@ -104,14 +104,17 @@ impl<'a> Canvas<'a> {
         Rect::new(left as u16, top as u16, (right - left) as u16, (bottom - top) as u16)
     }
 
+    /// Columns this canvas spans, clipped or not.
     pub const fn width(&self) -> u16 {
         self.width
     }
 
+    /// Rows this canvas spans, clipped or not.
     pub const fn height(&self) -> u16 {
         self.height
     }
 
+    /// The palette in force, for drawing something a [`Role`] cannot express.
     pub const fn theme(&self) -> &Theme {
         &self.theme
     }
