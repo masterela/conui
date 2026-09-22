@@ -161,6 +161,21 @@ mod tests {
     }
 
     #[test]
+    fn the_raw_buffer_writes_where_a_canvas_would_have_clipped() {
+        // Both halves of what the doc promises. The write lands, and it lands at absolute
+        // coordinates with no region to be relative to — which is exactly the hazard being
+        // documented, so it is worth a test that would notice if clipping were quietly added.
+        let mut buffer = Buffer::new(6, 2);
+        let mut frame = Frame::new(&mut buffer, Theme::LAYA);
+        frame.canvas(Rect::new(0, 0, 2, 1), |canvas| {
+            canvas.text(0, 0, "ab");
+        });
+        frame.buffer_mut().set_str(3, 1, "xy", conui_cell::Style::EMPTY, 6);
+        assert_eq!(buffer.row_text(0), "ab    ");
+        assert_eq!(buffer.row_text(1), "   xy ");
+    }
+
+    #[test]
     fn a_region_canvas_is_offset_and_clipped() {
         let mut buffer = Buffer::new(8, 2);
         let mut frame = Frame::new(&mut buffer, Theme::LAYA);

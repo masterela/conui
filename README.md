@@ -625,7 +625,7 @@ over mid-suite.
 ## Development
 
 ```sh
-cargo test --workspace                  # 435 unit tests + 19 doctests
+cargo test --workspace                  # 449 unit tests + 19 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 27 more
 cargo test -p conui --example settings  # 55 more

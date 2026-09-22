@@ -2041,6 +2041,39 @@ mod tests {
     }
 
     #[test]
+    fn the_header_height_is_the_row_the_first_child_actually_lands_on() {
+        // Restating the formula would test nothing — it is three lines and a test that copies it
+        // would agree with a wrong one. So the render answers instead: find the row the body is
+        // on and require `header_height` to have predicted it. This is what a parent sizing a
+        // panel's slot is relying on, and the number is only worth publishing if it is the truth.
+        let cases: Vec<(&str, Panel<'_>)> = vec![
+            ("bare", Panel::bare().child(Text::new("body"))),
+            ("title", Panel::new("HEAD").child(Text::new("body"))),
+            ("title and subtitle", Panel::new("HEAD").subtitle("sub").child(Text::new("body"))),
+            ("framed", Panel::bare().border(Border::Line).child(Text::new("body"))),
+            (
+                "framed with a title",
+                Panel::new("HEAD").border(Border::Line).child(Text::new("body")),
+            ),
+            ("padded", Panel::bare().padding(Padding::xy(0, 2)).child(Text::new("body"))),
+            (
+                "everything at once",
+                Panel::new("HEAD")
+                    .subtitle("sub")
+                    .border(Border::Line)
+                    .padding(Padding::xy(1, 1))
+                    .child(Text::new("body")),
+            ),
+        ];
+        for (what, panel) in cases {
+            let claimed = panel.header_height();
+            let drawn = rows(&panel, 12, 10);
+            let found = drawn.iter().position(|row| row.contains("body"));
+            assert_eq!(found, Some(usize::from(claimed)), "{what}: rows were {drawn:?}");
+        }
+    }
+
+    #[test]
     fn a_panel_smaller_than_its_frame_does_not_panic() {
         for width in 0..6u16 {
             for height in 0..4u16 {
