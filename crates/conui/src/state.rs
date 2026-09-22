@@ -384,6 +384,73 @@ impl Editor {
         text_width(&self.value[..self.cursor])
     }
 
+    /// Put the cursor at the grapheme boundary nearest display `column`.
+    ///
+    /// What a click in a text field means. A column inside a wide grapheme resolves to whichever
+    /// end of it is nearer, and a column past the end of the text puts the cursor at the end —
+    /// clicking the empty space to the right of a short value is a request to type at the end of
+    /// it, not a miss.
+    pub fn set_cursor_column(&mut self, column: u16) {
+        let mut at = 0u16;
+        let mut cursor = 0usize;
+        for grapheme in self.value.graphemes(true) {
+            let width = text_width(grapheme);
+            if column < at + width {
+                // Inside this grapheme: round to the nearer of its two edges.
+                if column >= at + width.div_ceil(2) {
+                    cursor += grapheme.len();
+                }
+                self.cursor = cursor;
+                return;
+            }
+            at += width;
+            cursor += grapheme.len();
+        }
+        self.cursor = self.value.len();
+    }
+
+    /// The part of the value a field `width` cells wide shows, and how many display columns are
+    /// hidden off its left edge.
+    ///
+    /// A field narrower than its text scrolls horizontally to keep the cursor in view. Both the
+    /// widget drawing it and the code turning a click into a caret position need to agree on
+    /// exactly how far it scrolled, so that rule lives here rather than in either of them.
+    ///
+    /// Resolve a click against the hidden width returned *before* moving the cursor: the frame the
+    /// user clicked on was drawn with that scroll, and moving the cursor first changes it.
+    ///
+    /// ```
+    /// use conui::state::Editor;
+    ///
+    /// let mut editor = Editor::with("a long heading that does not fit");
+    /// // The cursor is at the end, so the field shows the tail of the text.
+    /// let (shown, hidden) = editor.view_from(10);
+    /// assert_eq!(shown, "s not fit");
+    /// assert_eq!(hidden, 23);
+    ///
+    /// // A click on the seventh cell of that field lands just before "fit".
+    /// editor.set_cursor_column(hidden + 6);
+    /// assert_eq!(&editor.value()[..editor.cursor()], "a long heading that does not ");
+    /// ```
+    pub fn view_from(&self, width: u16) -> (&str, u16) {
+        if width == 0 {
+            return ("", 0);
+        }
+        // One column past the last character is where the cursor sits while typing at the end, so
+        // the field has to keep room for it.
+        let target = self.cursor_column().saturating_sub(width - 1);
+        let mut hidden = 0u16;
+        let mut start = 0usize;
+        for grapheme in self.value.graphemes(true) {
+            if hidden >= target {
+                break;
+            }
+            hidden += text_width(grapheme);
+            start += grapheme.len();
+        }
+        (&self.value[start..], hidden)
+    }
+
     /// Replace the text, putting the cursor at the end.
     pub fn set_value(&mut self, text: impl Into<String>) {
         self.value = text.into();
@@ -1297,6 +1364,71 @@ mod tests {
         editor.right();
         editor.right();
         assert_eq!(editor.cursor(), 3, "a is one byte, ñ is two");
+    }
+
+    #[test]
+    fn a_click_puts_the_cursor_between_two_characters_not_on_one() {
+        let mut editor = Editor::with("hello");
+        editor.set_cursor_column(0);
+        assert_eq!(editor.cursor(), 0);
+        editor.set_cursor_column(3);
+        assert_eq!(&editor.value()[..editor.cursor()], "hel");
+    }
+
+    #[test]
+    fn a_click_inside_a_wide_grapheme_rounds_to_its_nearer_edge() {
+        // "a日b": the ideograph occupies columns 1 and 2.
+        let mut editor = Editor::with("a日b");
+        editor.set_cursor_column(1);
+        assert_eq!(editor.cursor(), 1, "the left half belongs to the character before it");
+        editor.set_cursor_column(2);
+        assert_eq!(editor.cursor(), 4, "the right half belongs to the one after");
+        editor.set_cursor_column(3);
+        assert_eq!(editor.cursor(), 4);
+    }
+
+    #[test]
+    fn a_click_past_the_end_of_the_text_lands_at_the_end() {
+        // Clicking the empty half of a field is a request to type at the end, not a miss.
+        let mut editor = Editor::with("short");
+        editor.home();
+        editor.set_cursor_column(400);
+        assert_eq!(editor.cursor(), 5);
+    }
+
+    #[test]
+    fn a_field_scrolls_only_as_far_as_the_cursor_requires() {
+        let mut editor = Editor::with("abcdefgh");
+        assert_eq!(editor.view_from(20), ("abcdefgh", 0), "a field with room scrolls not at all");
+        // Eight characters, a five-cell field: the cursor sits one past the text, at column 8, so
+        // four columns are hidden to keep it visible.
+        assert_eq!(editor.view_from(5), ("efgh", 4));
+        editor.home();
+        assert_eq!(editor.view_from(5), ("abcdefgh", 0), "and scrolls back when the cursor does");
+        assert_eq!(editor.view_from(0), ("", 0), "a field with no width shows nothing");
+    }
+
+    #[test]
+    fn clicking_the_cell_the_cursor_is_drawn_in_does_not_move_it() {
+        // The invariant that makes a click land where the eye says it should: `Input` draws with
+        // `view_from` and a click resolves with `set_cursor_column`, so the two have to agree at
+        // every position and every field width.
+        for width in 1..=12u16 {
+            let mut editor = Editor::with("a日b cdé");
+            editor.home();
+            loop {
+                let cursor = editor.cursor();
+                let (_, hidden) = editor.view_from(width);
+                let drawn = editor.cursor_column().saturating_sub(hidden);
+                let mut clicked = editor.clone();
+                clicked.set_cursor_column(hidden + drawn);
+                assert_eq!(clicked.cursor(), cursor, "width {width}, cursor {cursor}");
+                editor.right();
+                if editor.cursor() == cursor {
+                    break;
+                }
+            }
+        }
     }
 
     #[test]
