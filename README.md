@@ -117,11 +117,12 @@ cargo run -p conui --example settings
 Applying a theme re-themes the live app; the `PREVIEW` panel shows the *draft* palette before you
 commit to it, which a `Role` cannot express and a `Paint` closure can. The whole screen works with
 the mouse too: click a tab, a field or a button, click a select to open it, click an option to choose
-it, click anywhere else to dismiss it. The `ABOUT` tab holds more text than fits and scrolls — with
-the wheel, the arrows, `PAGE UP`/`PAGE DOWN`, `HOME` and `END` — while the buttons below it stay put.
-`/` over that pane opens a find field in the footer and `n` repeats the search: the viewport scrolls
-the least that brings the match into view, and the pane is composed from a table so that the search
-can count the row a word is on — a layout will not tell you that. `--dump` takes `--open` and
+it, click anywhere else to dismiss it. Clicking into the text field puts the caret where you pointed,
+even when the field has scrolled sideways. The `ABOUT` tab holds more text than fits and scrolls —
+with the wheel, the arrows, `PAGE UP`/`PAGE DOWN`, `HOME` and `END` — while the buttons below it stay
+put. `/` over that pane opens a find field in the footer and `n` repeats the search: the viewport
+scrolls the least that brings the match into view, and the pane is composed from a table so that the
+search can count the row a word is on — a layout will not tell you that. `--dump` takes `--open` and
 `--tab N` so any state of it can be printed as text, which is how most of its tests assert on the
 layout.
 
@@ -418,7 +419,10 @@ Resolving *within* a control is the widget's own business, and each one that nee
 one measurement only it can make: `Tabs::index_at` (a click in the gap between two labels belongs to
 neither), `Selection::row_at` (which reads the offset the last window recorded, because a row number
 means nothing without knowing how far the list had scrolled), `List::text_column` (left of it is the
-tick, and clicking a task's tick is how you tick it), and `Dropdown::handle_mouse`, which takes
+tick, and clicking a task's tick is how you tick it), `Editor::view_from` paired with
+`Editor::set_cursor_column` (a click in a text field is a caret position, and a field narrower than
+its text has scrolled — so the same rule that decided what to draw decides what was clicked, which is
+why it belongs to the editor rather than to the widget), and `Dropdown::handle_mouse`, which takes
 *every* event while it is open for the same reason its keyboard handler does — a click outside
 dismisses the list rather than falling through to what is under it.
 
@@ -532,10 +536,10 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace                  # 396 unit tests + 18 doctests
+cargo test --workspace                  # 401 unit tests + 19 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 26 more
-cargo test -p conui --example settings  # 45 more
+cargo test -p conui --example settings  # 48 more
 cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
@@ -550,7 +554,7 @@ just Linux, because the first run of this workflow found dead code in `platform/
 Linux-only lint job structurally cannot see, and that file is the one with no local compiler to check
 it.
 
-Test counts by crate: `conui` 259, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
+Test counts by crate: `conui` 264, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what
