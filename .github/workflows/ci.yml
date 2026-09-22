@@ -1,10 +1,11 @@
 # Builds and tests on the three platforms conui claims to support.
 #
 # The Windows job is the point of this file. `crates/conui-term/src/platform/windows.rs` is written
-# against the Console API but there is no Windows toolchain on the development machine, so until
-# this runs, that file has never been compiled — and a backend that has never been compiled is a
-# guess. Nothing in the suite needs a terminal: a `Frame` owns nothing but a `Buffer`, so every
-# test renders into memory and runs headless on a CI box.
+# against the Console API and there is no Windows toolchain on the development machine, so this job
+# is the only thing that compiles it — and a backend nothing compiles is a guess. Nothing in the
+# suite needs a terminal: a `Frame` owns nothing but a `Buffer`, so every test renders into memory
+# and runs headless on a CI box. That is also the limit of what this proves; entering a console and
+# putting it back is the one part no headless job can exercise.
 
 name: ci
 
