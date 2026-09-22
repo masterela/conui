@@ -26,6 +26,7 @@
 use std::cell::Cell;
 use std::ops::Range;
 
+use conui_cell::Rect;
 use conui_input::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -360,6 +361,339 @@ impl Editor {
     }
 }
 
+/// Which component input goes to, and the order `Tab` walks them in.
+///
+/// This is deliberately not a focus *manager*: there is no registry a widget signs itself into
+/// during render, and no widget ever asks "am I focused?" behind your back. You name the focusable
+/// things in your own type, you say what order they cycle in, and each widget is told the answer:
+///
+/// ```
+/// use conui::state::Focus;
+///
+/// #[derive(Clone, Copy, PartialEq)]
+/// enum Field {
+///     Name,
+///     Colour,
+///     Save,
+/// }
+///
+/// let mut focus = Focus::new([Field::Name, Field::Colour, Field::Save]);
+/// assert!(focus.is(Field::Name));
+/// focus.next();
+/// assert!(focus.is(Field::Colour));
+/// focus.prev();
+/// assert!(focus.is(Field::Name));
+/// ```
+///
+/// The payoff is that focus stays a value you can reason about. Whether `Tab` even *means* "next
+/// field" is yours to decide — inside a text area it might mean indent — and a screen whose
+/// focusable set changes (a tab switch, a row that only exists while editing) calls [`set_ring`]
+/// rather than fighting a registry that was populated by whatever happened to render last frame.
+///
+/// There is no notion of a disabled entry on purpose. A control that cannot be used should not be
+/// in the ring, and leaving it out is one `set_ring` call.
+///
+/// [`set_ring`]: Focus::set_ring
+#[derive(Clone, Debug)]
+pub struct Focus<T> {
+    ring: Vec<T>,
+    current: usize,
+}
+
+/// An empty ring, which focuses nothing. Derived `Default` would demand `T: Default` for no
+/// reason — there is no entry to construct.
+impl<T> Default for Focus<T> {
+    fn default() -> Self {
+        Self { ring: Vec::new(), current: 0 }
+    }
+}
+
+impl<T: Copy + PartialEq> Focus<T> {
+    /// A ring focused on its first entry.
+    pub fn new(ring: impl IntoIterator<Item = T>) -> Self {
+        Self { ring: ring.into_iter().collect(), current: 0 }
+    }
+
+    /// A ring focused on `id`, or on the first entry if it is not in the ring.
+    pub fn starting_at(ring: impl IntoIterator<Item = T>, id: T) -> Self {
+        let mut focus = Self::new(ring);
+        focus.focus(id);
+        focus
+    }
+
+    /// What has focus, or `None` if the ring is empty.
+    pub fn current(&self) -> Option<T> {
+        self.ring.get(self.current).copied()
+    }
+
+    /// Whether `id` has focus. The question every widget's `.focused(..)` argument is answering.
+    pub fn is(&self, id: T) -> bool {
+        self.current() == Some(id)
+    }
+
+    /// Move focus to `id`, reporting whether it was in the ring at all.
+    ///
+    /// Returning `false` rather than panicking matters for mouse and shortcut handling, where the
+    /// id you were handed may well belong to a control that is not focusable right now.
+    pub fn focus(&mut self, id: T) -> bool {
+        match self.ring.iter().position(|entry| *entry == id) {
+            Some(index) => {
+                self.current = index;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The next entry, wrapping. A no-op on an empty ring.
+    pub fn next(&mut self) {
+        if !self.ring.is_empty() {
+            self.current = (self.current + 1) % self.ring.len();
+        }
+    }
+
+    /// The previous entry, wrapping.
+    pub fn prev(&mut self) {
+        if !self.ring.is_empty() {
+            self.current = (self.current + self.ring.len() - 1) % self.ring.len();
+        }
+    }
+
+    pub fn first(&mut self) {
+        self.current = 0;
+    }
+
+    pub fn last(&mut self) {
+        self.current = self.ring.len().saturating_sub(1);
+    }
+
+    /// Replace the focusable set, keeping focus where it is if that entry still exists.
+    ///
+    /// Without the "keep" part, switching tabs would silently drop focus back to the first field
+    /// of the screen, and a user who had tabbed three fields in would lose their place for
+    /// reasons they cannot see.
+    pub fn set_ring(&mut self, ring: impl IntoIterator<Item = T>) {
+        let was = self.current();
+        self.ring = ring.into_iter().collect();
+        self.current = was
+            .and_then(|id| self.ring.iter().position(|entry| *entry == id))
+            .unwrap_or(0)
+            .min(self.ring.len().saturating_sub(1));
+    }
+
+    pub fn ring(&self) -> &[T] {
+        &self.ring
+    }
+
+    pub fn len(&self) -> usize {
+        self.ring.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ring.is_empty()
+    }
+
+    /// Apply `Tab` and `Shift+Tab`, reporting whether the key was used.
+    ///
+    /// Nothing else, and in particular not the arrow keys: in a list or a text field they mean
+    /// something else entirely, and a focus ring that swallowed them would make both unusable.
+    pub fn handle(&mut self, key: &KeyEvent) -> bool {
+        if key.kind == KeyEventKind::Release {
+            return false;
+        }
+        match key.code {
+            KeyCode::Tab if !key.modifiers.contains(Modifiers::SHIFT) => self.next(),
+            KeyCode::Tab | KeyCode::BackTab => self.prev(),
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// An open-or-closed list of choices: the state behind a [`Select`](crate::widget::Select).
+///
+/// The choices themselves are not in here. They are your data, passed to the widget each frame,
+/// which means a dropdown over a list that changes — files in a directory, branches in a repo —
+/// needs no invalidation step. What this owns is the three things that survive a frame: whether
+/// the list is showing, which entry is highlighted, and what to go back to if the user changes
+/// their mind.
+///
+/// A dropdown is also the first widget here that has to draw *outside* its own region, and a view
+/// in conui structurally cannot: it is handed a sub-canvas and clipped to it. So it does not try.
+/// The closed field records where it landed during render, and the app draws the list as a second
+/// pass over the same frame:
+///
+/// ```no_run
+/// # use conui::state::Dropdown;
+/// # use conui::widget::Menu;
+/// # use conui::{Frame, Theme};
+/// # use conui_cell::Buffer;
+/// # let options = ["dark", "light"];
+/// # let dropdown = Dropdown::new();
+/// # let mut buffer = Buffer::new(40, 10);
+/// # let mut frame = Frame::new(&mut buffer, Theme::LAYA);
+/// # let screen = conui::widget::Text::new("");
+/// frame.render_full(&screen);
+/// if dropdown.is_open() {
+///     let area = dropdown.popup_area(options.len(), frame.area());
+///     frame.render(&Menu::new(dropdown.selection(), options), area);
+/// }
+/// ```
+///
+/// Two passes instead of one, and in exchange there is no z-order to configure, no overlay stack
+/// to flush, and the thing on top is on top because you drew it last.
+#[derive(Debug, Default)]
+pub struct Dropdown {
+    open: bool,
+    selection: Selection,
+    /// What to restore if the list is dismissed rather than committed.
+    restore: usize,
+    /// Where the closed field last drew itself, in buffer coordinates.
+    field: Cell<Rect>,
+    /// How tall the list is allowed to get.
+    rows: u16,
+}
+
+impl Clone for Dropdown {
+    fn clone(&self) -> Self {
+        Self {
+            open: self.open,
+            selection: self.selection.clone(),
+            restore: self.restore,
+            field: Cell::new(self.field.get()),
+            rows: self.rows,
+        }
+    }
+}
+
+impl Dropdown {
+    /// Closed, on the first choice.
+    pub fn new() -> Self {
+        Self { rows: 8, ..Default::default() }
+    }
+
+    /// Closed, on choice `index`.
+    pub fn at(index: usize) -> Self {
+        Self { selection: Selection::at(index), restore: index, ..Self::new() }
+    }
+
+    /// Cap how many choices the open list shows at once. It scrolls beyond that.
+    pub fn rows(mut self, rows: u16) -> Self {
+        self.rows = rows;
+        self
+    }
+
+    pub const fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// The chosen index. Always current: dismissing the list restores the previous choice rather
+    /// than leaving a half-made decision behind, so there is no "committed value" to track
+    /// separately.
+    pub fn selected(&self) -> usize {
+        self.selection.selected()
+    }
+
+    pub fn set_selected(&mut self, index: usize) {
+        self.selection.set_selected(index);
+    }
+
+    /// The highlight the open list draws, for the widget.
+    pub const fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
+    pub fn open(&mut self) {
+        self.open = true;
+        self.restore = self.selection.selected();
+    }
+
+    /// Accept the highlighted choice.
+    pub fn commit(&mut self) {
+        self.open = false;
+    }
+
+    /// Put the choice back to what it was before the list opened.
+    pub fn dismiss(&mut self) {
+        self.open = false;
+        self.selection.set_selected(self.restore);
+    }
+
+    pub fn toggle(&mut self) {
+        if self.open {
+            self.commit();
+        } else {
+            self.open();
+        }
+    }
+
+    /// Where the closed field drew itself. Set by the widget during render.
+    pub fn field(&self) -> Rect {
+        self.field.get()
+    }
+
+    pub fn set_field(&self, area: Rect) {
+        self.field.set(area);
+    }
+
+    /// Where the open list should go: under the field if it fits, over it if it does not.
+    ///
+    /// Flipping matters more than it sounds like. A dropdown on the last row of a full-screen app
+    /// is not an edge case, it is where the Apply button lives.
+    pub fn popup_area(&self, len: usize, screen: Rect) -> Rect {
+        let field = self.field.get();
+        // Two rows of border plus the rows themselves, capped and never zero-height.
+        let wanted = u16::try_from(len).unwrap_or(u16::MAX).clamp(1, self.rows.max(1));
+        let height = wanted.saturating_add(2).min(screen.height.max(1));
+
+        let below = field.bottom();
+        let y = if below.saturating_add(height) <= screen.bottom() {
+            below
+        } else {
+            // Above, or pinned to the top edge if there is no room either way.
+            field.y.checked_sub(height).unwrap_or(screen.y)
+        };
+
+        let width = field.width.max(4).min(screen.width.max(4));
+        let x = field.x.min(screen.right().saturating_sub(width));
+        Rect::new(x, y, width, height)
+    }
+
+    /// Apply the keys a dropdown owns, reporting whether the key was used.
+    ///
+    /// Closed, it opens on `Enter` or `Space` and otherwise takes nothing — so a screen can still
+    /// use the arrow keys to move between fields. Open, it takes the arrows and `Enter`/`Escape`,
+    /// and takes them *all*, because a list covering half the screen must be dismissed before
+    /// anything else can be reached.
+    pub fn handle(&mut self, key: &KeyEvent, len: usize) -> bool {
+        if key.kind == KeyEventKind::Release {
+            return false;
+        }
+        if !self.open {
+            return match key.code {
+                KeyCode::Enter | KeyCode::Char(' ') => {
+                    self.open();
+                    true
+                }
+                _ => false,
+            };
+        }
+        match key.code {
+            KeyCode::Up => self.selection.up(),
+            KeyCode::Down => self.selection.down(len),
+            KeyCode::Home => self.selection.first(),
+            KeyCode::End => self.selection.last(len),
+            KeyCode::PageUp => self.selection.page_up(usize::from(self.rows)),
+            KeyCode::PageDown => self.selection.page_down(usize::from(self.rows), len),
+            KeyCode::Enter | KeyCode::Char(' ') => self.commit(),
+            KeyCode::Escape => self.dismiss(),
+            // Deliberately greedy: see above.
+            _ => {}
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,5 +987,200 @@ mod tests {
         let mut editor = Editor::new();
         assert!(editor.handle(&KeyEvent::new(KeyCode::Char('A'), Modifiers::SHIFT)));
         assert_eq!(editor.value(), "A");
+    }
+
+    // ---- Focus --------------------------------------------------------------------------
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Id {
+        A,
+        B,
+        C,
+    }
+
+    fn ring() -> Focus<Id> {
+        Focus::new([Id::A, Id::B, Id::C])
+    }
+
+    #[test]
+    fn a_new_ring_focuses_its_first_entry() {
+        let focus = ring();
+        assert_eq!(focus.current(), Some(Id::A));
+        assert!(focus.is(Id::A));
+        assert!(!focus.is(Id::B));
+        assert_eq!(focus.len(), 3);
+    }
+
+    #[test]
+    fn next_and_prev_wrap_in_both_directions() {
+        let mut focus = ring();
+        focus.prev();
+        assert_eq!(focus.current(), Some(Id::C), "prev from the first entry wraps to the last");
+        focus.next();
+        assert_eq!(focus.current(), Some(Id::A));
+    }
+
+    #[test]
+    fn focusing_something_outside_the_ring_changes_nothing_and_says_so() {
+        let mut focus = Focus::new([Id::A, Id::B]);
+        assert!(focus.focus(Id::B));
+        assert!(!focus.focus(Id::C));
+        assert_eq!(focus.current(), Some(Id::B));
+    }
+
+    #[test]
+    fn an_empty_ring_focuses_nothing_and_does_not_panic() {
+        let mut focus: Focus<Id> = Focus::new([]);
+        assert_eq!(focus.current(), None);
+        assert!(focus.is_empty());
+        focus.next();
+        focus.prev();
+        focus.last();
+        assert_eq!(focus.current(), None);
+    }
+
+    #[test]
+    fn replacing_the_ring_keeps_focus_where_it_was_if_it_survives() {
+        let mut focus = ring();
+        focus.focus(Id::C);
+        focus.set_ring([Id::A, Id::C]);
+        assert_eq!(focus.current(), Some(Id::C));
+    }
+
+    #[test]
+    fn replacing_the_ring_falls_back_to_the_first_entry_when_focus_is_gone() {
+        let mut focus = ring();
+        focus.focus(Id::C);
+        focus.set_ring([Id::A, Id::B]);
+        assert_eq!(focus.current(), Some(Id::A));
+    }
+
+    #[test]
+    fn shrinking_to_nothing_leaves_no_focus_rather_than_an_index_past_the_end() {
+        let mut focus = ring();
+        focus.focus(Id::C);
+        focus.set_ring([]);
+        assert_eq!(focus.current(), None);
+    }
+
+    #[test]
+    fn focus_takes_tab_and_shift_tab_and_nothing_else() {
+        let mut focus = ring();
+        assert!(focus.handle(&KeyEvent::plain(KeyCode::Tab)));
+        assert_eq!(focus.current(), Some(Id::B));
+        assert!(focus.handle(&KeyEvent::plain(KeyCode::BackTab)));
+        assert_eq!(focus.current(), Some(Id::A));
+        assert!(focus.handle(&KeyEvent::new(KeyCode::Tab, Modifiers::SHIFT)));
+        assert_eq!(
+            focus.current(),
+            Some(Id::C),
+            "shift+tab reported as a modifier still goes back"
+        );
+    }
+
+    #[test]
+    fn focus_leaves_the_arrow_keys_for_whatever_has_focus() {
+        let mut focus = ring();
+        for code in [KeyCode::Up, KeyCode::Down, KeyCode::Left, KeyCode::Right, KeyCode::Enter] {
+            assert!(!focus.handle(&KeyEvent::plain(code)), "{code:?} should not move focus");
+        }
+        assert_eq!(focus.current(), Some(Id::A));
+    }
+
+    // ---- Dropdown -----------------------------------------------------------------------
+
+    #[test]
+    fn a_dropdown_starts_closed_on_the_choice_it_was_given() {
+        let dropdown = Dropdown::at(2);
+        assert!(!dropdown.is_open());
+        assert_eq!(dropdown.selected(), 2);
+    }
+
+    #[test]
+    fn enter_opens_a_closed_dropdown_and_nothing_else_does() {
+        let mut dropdown = Dropdown::new();
+        assert!(!dropdown.handle(&KeyEvent::plain(KeyCode::Down), 3));
+        assert!(!dropdown.is_open(), "an arrow key must not open a closed dropdown");
+        assert!(dropdown.handle(&KeyEvent::plain(KeyCode::Enter), 3));
+        assert!(dropdown.is_open());
+    }
+
+    #[test]
+    fn an_open_dropdown_moves_on_the_arrows_and_commits_on_enter() {
+        let mut dropdown = Dropdown::new();
+        dropdown.open();
+        dropdown.handle(&KeyEvent::plain(KeyCode::Down), 3);
+        dropdown.handle(&KeyEvent::plain(KeyCode::Down), 3);
+        assert_eq!(dropdown.selected(), 2);
+        dropdown.handle(&KeyEvent::plain(KeyCode::Enter), 3);
+        assert!(!dropdown.is_open());
+        assert_eq!(dropdown.selected(), 2, "a committed choice stays");
+    }
+
+    #[test]
+    fn dismissing_an_open_dropdown_restores_the_previous_choice() {
+        let mut dropdown = Dropdown::at(1);
+        dropdown.open();
+        dropdown.handle(&KeyEvent::plain(KeyCode::Down), 3);
+        assert_eq!(dropdown.selected(), 2);
+        dropdown.handle(&KeyEvent::plain(KeyCode::Escape), 3);
+        assert!(!dropdown.is_open());
+        assert_eq!(dropdown.selected(), 1);
+    }
+
+    #[test]
+    fn an_open_dropdown_swallows_every_key_because_it_is_covering_the_screen() {
+        let mut dropdown = Dropdown::new();
+        dropdown.open();
+        for code in [KeyCode::Tab, KeyCode::Char('q'), KeyCode::F(1)] {
+            assert!(
+                dropdown.handle(&KeyEvent::plain(code), 3),
+                "{code:?} leaked past an open list"
+            );
+        }
+        assert!(dropdown.is_open());
+    }
+
+    #[test]
+    fn a_list_opens_below_its_field_when_there_is_room() {
+        let dropdown = Dropdown::new();
+        dropdown.set_field(Rect::new(4, 2, 20, 1));
+        let area = dropdown.popup_area(3, Rect::sized(40, 20));
+        assert_eq!(area, Rect::new(4, 3, 20, 5), "three choices plus two rows of border");
+    }
+
+    #[test]
+    fn a_list_with_no_room_below_flips_above_its_field() {
+        let dropdown = Dropdown::new();
+        dropdown.set_field(Rect::new(0, 18, 10, 1));
+        let area = dropdown.popup_area(3, Rect::sized(40, 20));
+        assert_eq!(area.bottom(), 18, "it should sit directly on top of the field");
+        assert_eq!(area.y, 13);
+    }
+
+    #[test]
+    fn a_list_taller_than_the_screen_is_capped_rather_than_drawn_off_the_edge() {
+        let dropdown = Dropdown::new().rows(4);
+        dropdown.set_field(Rect::new(0, 0, 10, 1));
+        let area = dropdown.popup_area(100, Rect::sized(40, 8));
+        assert_eq!(area.height, 6, "four rows plus the border");
+        assert!(area.bottom() <= 8);
+    }
+
+    #[test]
+    fn a_list_at_the_right_edge_is_pulled_back_on_screen() {
+        let dropdown = Dropdown::new();
+        dropdown.set_field(Rect::new(34, 0, 20, 1));
+        let area = dropdown.popup_area(2, Rect::sized(40, 20));
+        assert_eq!(area.right(), 40);
+        assert_eq!(area.x, 20);
+    }
+
+    #[test]
+    fn a_dropdown_over_nothing_still_produces_a_drawable_area() {
+        let dropdown = Dropdown::new();
+        dropdown.set_field(Rect::new(0, 0, 8, 1));
+        let area = dropdown.popup_area(0, Rect::sized(20, 10));
+        assert!(!area.is_empty());
     }
 }

@@ -78,6 +78,38 @@ Tasks persist as a markdown checklist in `$CONUI_TODO_FILE`, or `~/.conui-todo.m
 program in under 600 lines, and its own `#[cfg(test)]` module drives the actual key handler and
 asserts on rendered rows — 18 tests, no terminal involved.
 
+The third demo is the one with controls: a focus ring walked with `Tab`, tabs, buttons, a text
+field, and dropdowns whose lists are drawn over everything else.
+
+```
+  CONUI  /  SETTINGS                                                      MODIFIED
+  APPEARANCE   LAYOUT   ABOUT
+  ──────────
+
+  Palette     [ LAYA             ▴ ]                ┌─ PREVIEW ──────────────────┐
+              ┌────────────────────┐                │ ████ accent                │
+  Bars        │› LAYA              │                │ ████ warn                  │
+              │  EMBER             │                │ ████ danger                │
+  Heading     │  INHERIT           │                │ ████ info                  │
+              └────────────────────┘                │ ████ text                  │
+                                                    │ ████ muted                 │
+                                                    │                            │
+                                                    │ BARS   █████████▎      62% │
+                                                    │                            │
+                                                    │ LOCAL INTELLIGENCE         │
+  ‹ Revert ›  ‹ Apply ›                             └────────────────────────────┘
+  ────────────────────────────────────────────────────────────────────────────────
+  ←/→ change   ↵ open   TAB next                                             ready
+```
+
+```sh
+cargo run -p conui --example settings
+```
+
+Applying a theme re-themes the live app; the `PREVIEW` panel shows the *draft* palette before you
+commit to it, which a `Role` cannot express and a `Paint` closure can. `--dump` takes `--open` and
+`--tab N` so any state of it can be printed as text; 17 of its tests do exactly that.
+
 ## Quick start
 
 ```rust
@@ -158,8 +190,8 @@ fn place(canvas: &mut Canvas<'_>, x: u16, y: u16, w: u16, h: u16, view: &dyn Vie
 | | |
 |---|---|
 | Layout | `Constraint::{Length, Percentage, Ratio, Min, Max, Fill}`, `Row`, `Column`, `Spacer`, `Padded`, `centered` |
-| Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Input` |
-| State | `Selection` (cursor + its own scroll offset), `Editor` (grapheme-aware single-line editing) |
+| Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Input`, `Button`, `Tabs`, `Select`, `Menu` |
+| State | `Selection` (cursor + its own scroll offset), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed) |
 | Escapes | `Paint(closure)`, `When`, and the raw `Canvas` |
 | Themes | `Theme::LAYA` (default), `Theme::EMBER`, `Theme::INHERIT`; nine semantic `Role`s |
 
@@ -223,11 +255,108 @@ so an emoji or a combining accent in a field does not desynchronise the caret. `
 own block cursor as a reversed cell rather than parking the terminal cursor, so a field nested six
 levels deep in a layout needs no cooperation from anything above it.
 
-There is still no focus system and no hit-testing: a `List` does not know it is "active", and
-nothing routes a click to a widget. Keyboard-driven screens that decide for themselves which
-component a key belongs to work today; `Button`, `Tabs` and a combobox want that routing layer
-first. Nor is there a general scroll viewport — a `List` scrolls itself, but an arbitrary subtree
-taller than its region is clipped, not scrolled.
+### Focus is a value, not a manager
+
+`Focus<T>` is a ring of *your* ids — a `Copy + PartialEq` enum you declare — and nothing more. It
+does not register widgets, so focus never depends on what happened to draw last frame, and a widget
+is *told* it is focused rather than asking:
+
+```rust
+use conui::view::{Row, ViewExt};
+use conui::widget::{Button, Select};
+use conui::{Dropdown, Focus, KeyCode, KeyEvent, View};
+
+#[derive(Clone, Copy, PartialEq)]
+enum Id {
+    Palette,
+    Apply,
+}
+
+const PALETTES: [&str; 3] = ["LAYA", "EMBER", "INHERIT"];
+
+struct Screen {
+    focus: Focus<Id>,
+    palette: Dropdown,
+}
+
+impl Screen {
+    fn new() -> Self {
+        Self { focus: Focus::new([Id::Palette, Id::Apply]), palette: Dropdown::new() }
+    }
+
+    fn key(&mut self, key: &KeyEvent) {
+        // An open list is modal, and modality is an early return: it answers first and swallows
+        // everything, Tab included. No modal stack, no event-capture phase.
+        if self.palette.is_open() {
+            self.palette.handle(key, PALETTES.len());
+            return;
+        }
+        if self.focus.handle(key) {
+            return; // Tab and Shift-Tab, and nothing else.
+        }
+        match self.focus.current() {
+            Some(Id::Palette) => {
+                self.palette.handle(key, PALETTES.len());
+            }
+            Some(Id::Apply) if key.code == KeyCode::Enter => { /* apply */ }
+            _ => {}
+        }
+    }
+
+    fn view(&self) -> impl View + '_ {
+        Row::new()
+            .gap(2)
+            .child(
+                Select::new(&self.palette, PALETTES)
+                    .focused(self.focus.is(Id::Palette))
+                    .length(Select::width(&PALETTES)),
+            )
+            .child(
+                Button::new("Apply")
+                    .focused(self.focus.is(Id::Apply))
+                    .length(Button::width("Apply")),
+            )
+    }
+}
+```
+
+There are no disabled entries: a control that cannot be reached is simply not in the ring, and
+`set_ring` rebuilds it — keeping the current focus if that entry survived — which is how the
+settings demo changes the tab order when you change tab.
+
+### Overlays are a second pass
+
+A view is clipped to its sub-canvas and structurally *cannot* draw outside it. That is the property
+that makes composition safe, and it means a dropdown's list cannot be part of the field that owns
+it. So `Select` records where it landed during render, and the app draws the list afterwards:
+
+```rust,no_run
+# use conui::view::Column;
+# use conui::widget::Menu;
+# use conui::{App, Dropdown};
+# const PALETTES: [&str; 3] = ["LAYA", "EMBER", "INHERIT"];
+# let mut app = App::new().unwrap();
+# let dropdown = Dropdown::new();
+# let screen = Column::new();
+app.draw(|frame| {
+    frame.render_full(&screen); // The field records its absolute rect here.
+    if dropdown.is_open() {
+        let menu = Menu::new(dropdown.selection(), PALETTES);
+        frame.render(&menu, dropdown.popup_area(PALETTES.len(), frame.area()));
+    }
+})?;
+# Ok::<(), std::io::Error>(())
+```
+
+Z-order is draw order, `popup_area` flips the list above the field when there is no room below it
+and clamps to the screen, and `Menu` clears its own region first — an overlay that lets the frame
+show through is not one. The absolute rect comes from `Canvas::screen_area()`, the only thing in the
+canvas API that speaks buffer coordinates, because the only two things that need them are overlays
+and hit-testing.
+
+There is still no hit-testing: nothing routes a click to a widget, so every screen here is
+keyboard-driven. Nor is there a general scroll viewport — a `List` scrolls itself, but an arbitrary
+subtree taller than its region is clipped, not scrolled.
 
 ## The crates
 
@@ -266,14 +395,16 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace              # 312 unit tests + 12 doctests
-cargo test -p conui --example todo  # 18 more: the example tests itself
+cargo test --workspace                  # 355 unit tests + 15 doctests
+cargo test -p conui --example todo      # 18 more: the example tests itself
+cargo test -p conui --example settings  # 17 more
 cargo run -p conui --example snake
 cargo run -p conui --example todo
-cargo fmt --all                     # rustfmt.toml pins use_small_heuristics = "Max"
+cargo run -p conui --example settings
+cargo fmt --all                         # rustfmt.toml pins use_small_heuristics = "Max"
 ```
 
-Test counts by crate: `conui` 177, `conui-cell` 55, `conui-input` 50, `conui-term` 30.
+Test counts by crate: `conui` 220, `conui-cell` 55, `conui-input` 50, `conui-term` 30.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what

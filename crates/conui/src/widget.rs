@@ -1,15 +1,19 @@
 //! The widget set.
 //!
 //! Deliberately small. Each of these exists because the reference design uses it more than
-//! once, and every one of them is under fifty lines over the canvas — which is the point: if a
+//! once, and most of them are a few dozen lines over the canvas — which is the point: if a
 //! widget you need is missing, writing it is a `Paint` closure away, not a framework extension.
+//!
+//! None of them own state. A widget that needs a cursor, a selected index or an open/closed flag
+//! borrows one of the plain structs in [`crate::state`] for the frame, and a widget that can be
+//! focused is *told* so with `.focused(bool)` rather than asking a registry.
 
 use conui_cell::{Padding, Rect, Style};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::canvas::{Canvas, text_width};
 use crate::layout::Constraint;
-use crate::state::{Editor, Selection};
+use crate::state::{Dropdown, Editor, Selection};
 use crate::theme::Role;
 use crate::typography::{self, BarStyle, DIGIT_HEIGHT, line, mark};
 use crate::view::{Stack, View};
@@ -756,6 +760,18 @@ impl Hints {
         self.spacing = spacing;
         self
     }
+
+    /// Columns one item occupies: the key, a space, the description.
+    fn item_width(key: &str, action: &str) -> u16 {
+        text_width(key) + 1 + text_width(action)
+    }
+
+    /// Columns this legend wants, with no trailing spacing.
+    pub fn width(&self) -> u16 {
+        let items: u16 = self.items.iter().map(|(k, a)| Self::item_width(k, a)).sum();
+        let gaps = self.items.len().saturating_sub(1) as u16 * self.spacing;
+        items + gaps
+    }
 }
 
 impl Default for Hints {
@@ -768,7 +784,10 @@ impl View for Hints {
     fn render(&self, canvas: &mut Canvas<'_>) {
         let mut x = 0i32;
         for (key, action) in &self.items {
-            if x >= i32::from(canvas.width()) {
+            // Drop an item that does not fit whole rather than letting the canvas clip it. A
+            // legend reading `ESC qui` looks like a bug in the program; one hint fewer just looks
+            // like a narrow window.
+            if x + i32::from(Self::item_width(key, action)) > i32::from(canvas.width()) {
                 break;
             }
             x += i32::from(canvas.put(x, 0, key, self.key_role));
@@ -1087,6 +1106,391 @@ impl View for Input<'_> {
     }
 }
 
+// ---- Button -----------------------------------------------------------------------------
+
+/// A label you can activate, drawn as `‹ LABEL ›`.
+///
+/// It has no click handler and no callback. A button in an immediate-mode tree is a *picture* of
+/// an action: you tell it whether it is focused, and when your key handler sees `Enter` on that
+/// focus id, you run the action yourself. That sounds like less, and it is — there is no question
+/// of what runs when, no borrow of your state trapped inside a closure, and the action is a plain
+/// method you can also bind to a shortcut or call from a test.
+///
+/// ```
+/// use conui::widget::Button;
+///
+/// let save = Button::new("Save").focused(true).accent();
+/// assert_eq!(Button::width("Save"), 8); // "‹ Save ›"
+/// # let _ = save;
+/// ```
+pub struct Button {
+    label: String,
+    focused: bool,
+    enabled: bool,
+    role: Role,
+}
+
+impl Button {
+    pub fn new(label: impl Into<String>) -> Self {
+        Self { label: label.into(), focused: false, enabled: true, role: Role::Text }
+    }
+
+    /// Whether this button currently has focus — `focus.is(Id::Save)`, usually.
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// The button's own colour: accent for the default action, danger for a destructive one.
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// The action the screen is built around.
+    pub fn accent(self) -> Self {
+        self.role(Role::Accent)
+    }
+
+    /// An action that destroys something.
+    pub fn danger(self) -> Self {
+        self.role(Role::Danger)
+    }
+
+    /// Draw it as unavailable. Keep it out of the focus ring too — greying a control that still
+    /// takes `Enter` is worse than not greying it at all.
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
+    }
+
+    /// Columns `label` needs, including the brackets and their spaces.
+    ///
+    /// Sizing a button's slot means knowing this, and `label.len() + 4` is wrong the moment the
+    /// label is not ASCII.
+    pub fn width(label: &str) -> u16 {
+        text_width(label).saturating_add(4)
+    }
+}
+
+impl View for Button {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let region = canvas.width();
+        if region == 0 || canvas.height() == 0 {
+            return;
+        }
+        let wanted = Self::width(&self.label);
+        let width = wanted.min(region);
+        // Centred in whatever it was given, so a row of buttons of different widths still reads
+        // as a row rather than as ragged text.
+        let x = i32::from((region - width) / 2);
+
+        let (frame_role, label_role) = match (self.enabled, self.focused) {
+            (false, _) => (Role::Dim, Role::Dim),
+            (true, false) => (Role::Dim, self.role),
+            (true, true) => (self.role, self.role),
+        };
+
+        canvas.set(x, 0, mark::BUTTON_LEFT, frame_role);
+        let inner = width.saturating_sub(4);
+        canvas.put_truncated(x + 2, 0, &self.label, inner, label_role);
+        canvas.set(x + i32::from(width) - 1, 0, mark::BUTTON_RIGHT, frame_role);
+
+        // Last, for the same reason the list highlight is last: every write above carries its own
+        // background, so patching afterwards is the only order the lift survives.
+        if self.focused && self.enabled {
+            let surface = canvas.theme().surface;
+            canvas
+                .style_area(Rect::new((region - width) / 2, 0, width, 1), Style::new().bg(surface));
+        }
+    }
+
+    fn constraint(&self) -> Constraint {
+        Constraint::Length(1)
+    }
+}
+
+// ---- Tabs -------------------------------------------------------------------------------
+
+/// A row of labels with the current one underlined.
+///
+/// Which tab is current is a [`Selection`] you own, so moving between tabs is
+/// `selection.cycle_down(len)` — the same call a list uses, because it is the same question.
+pub struct Tabs<'a> {
+    labels: Vec<String>,
+    selection: Option<&'a Selection>,
+    focused: bool,
+    gap: u16,
+    underline: bool,
+    role: Role,
+    selected_role: Role,
+}
+
+impl<'a> Tabs<'a> {
+    pub fn new<S: Into<String>>(labels: impl IntoIterator<Item = S>) -> Self {
+        Self {
+            labels: labels.into_iter().map(Into::into).collect(),
+            selection: None,
+            focused: false,
+            gap: 3,
+            underline: true,
+            role: Role::Muted,
+            selected_role: Role::Accent,
+        }
+    }
+
+    pub fn selection(mut self, selection: &'a Selection) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
+    /// Whether the tab bar is the thing the arrow keys are talking to.
+    ///
+    /// An unfocused bar still shows which tab you are on — it just stops claiming to be where
+    /// your keystrokes are going, which is the whole job of a focus ring.
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Columns between labels.
+    pub fn gap(mut self, gap: u16) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    /// Drop the underline row, making this one row tall.
+    pub fn no_underline(mut self) -> Self {
+        self.underline = false;
+        self
+    }
+
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    pub fn selected_role(mut self, role: Role) -> Self {
+        self.selected_role = role;
+        self
+    }
+
+    pub fn len(&self) -> usize {
+        self.labels.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty()
+    }
+
+    /// Columns every label and gap needs, for sizing or centring the bar.
+    pub fn width(&self) -> u16 {
+        let labels: u16 = self.labels.iter().map(|label| text_width(label)).sum();
+        let gaps = self.gap.saturating_mul(self.labels.len().saturating_sub(1) as u16);
+        labels.saturating_add(gaps)
+    }
+}
+
+impl View for Tabs<'_> {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let width = canvas.width();
+        if width == 0 || canvas.height() == 0 || self.labels.is_empty() {
+            return;
+        }
+        let selected = self.selection.map(Selection::selected);
+
+        let mut x = 0u16;
+        for (index, label) in self.labels.iter().enumerate() {
+            if x >= width {
+                break;
+            }
+            let is_selected = selected == Some(index);
+            let role = match (is_selected, self.focused) {
+                // A selected tab on an unfocused bar keeps its place without claiming the keys.
+                (true, false) => Role::Text,
+                (true, true) => self.selected_role,
+                (false, _) => self.role,
+            };
+            let drawn = canvas.put_truncated(i32::from(x), 0, label, width - x, role);
+            if is_selected && self.underline && canvas.height() > 1 {
+                let rule = if self.focused { self.selected_role } else { Role::Dim };
+                canvas.run(i32::from(x), 1, line::HORIZONTAL, drawn, rule);
+            }
+            x = x.saturating_add(drawn).saturating_add(self.gap);
+        }
+    }
+
+    fn constraint(&self) -> Constraint {
+        Constraint::Length(if self.underline { 2 } else { 1 })
+    }
+}
+
+// ---- Select -----------------------------------------------------------------------------
+
+/// The closed field of a dropdown: the current choice, bracketed, with a caret.
+///
+/// Rendering this also records where it landed, which is how [`Dropdown::popup_area`] knows where
+/// to put the open list. Draw the field first, the list second — see [`Dropdown`] for the two-pass
+/// shape and why it is two passes.
+pub struct Select<'a> {
+    dropdown: &'a Dropdown,
+    options: Vec<String>,
+    focused: bool,
+    role: Role,
+    empty: String,
+}
+
+impl<'a> Select<'a> {
+    pub fn new<S: Into<String>>(
+        dropdown: &'a Dropdown,
+        options: impl IntoIterator<Item = S>,
+    ) -> Self {
+        Self {
+            dropdown,
+            options: options.into_iter().map(Into::into).collect(),
+            focused: false,
+            role: Role::Text,
+            empty: String::from("—"),
+        }
+    }
+
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// What to show when there is nothing to choose from.
+    pub fn empty(mut self, text: impl Into<String>) -> Self {
+        self.empty = text.into();
+        self
+    }
+
+    /// Columns the widest choice needs, brackets and caret included — so a column of selects can
+    /// be sized to its contents rather than guessed at.
+    pub fn width(options: &[impl AsRef<str>]) -> u16 {
+        let widest = options.iter().map(|option| text_width(option.as_ref())).max().unwrap_or(0);
+        widest.saturating_add(6)
+    }
+}
+
+impl View for Select<'_> {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let width = canvas.width();
+        if width == 0 || canvas.height() == 0 {
+            return;
+        }
+        // Record the whole field, not just the text, so the list lines up with the brackets.
+        self.dropdown.set_field(Rect::new(
+            canvas.screen_area().x,
+            canvas.screen_area().y,
+            width,
+            1,
+        ));
+
+        let open = self.dropdown.is_open();
+        let frame_role = if self.focused || open { Role::Accent } else { Role::Dim };
+        canvas.set(0, 0, '[', frame_role);
+        canvas.set(i32::from(width) - 1, 0, ']', frame_role);
+
+        let caret = if open { mark::CARET_UP } else { mark::CARET_DOWN };
+        canvas.set(i32::from(width) - 3, 0, caret, frame_role);
+
+        let value = self.options.get(self.dropdown.selected()).map_or(self.empty.as_str(), |s| s);
+        let room = width.saturating_sub(6);
+        let role = if open { Role::Accent } else { self.role };
+        canvas.put_truncated(2, 0, value, room, role);
+
+        if self.focused && !open {
+            let surface = canvas.theme().surface;
+            canvas.style_area(Rect::new(0, 0, width, 1), Style::new().bg(surface));
+        }
+    }
+
+    fn constraint(&self) -> Constraint {
+        Constraint::Length(1)
+    }
+}
+
+// ---- Menu -------------------------------------------------------------------------------
+
+/// A bordered list of choices, opaque, for drawing over the top of a frame.
+///
+/// This is what a dropdown's open list is, and it is a plain view: nothing about it knows it is an
+/// overlay. It clears its region before drawing — the one thing an overlay must do that an
+/// ordinary view must not — and it is on top because you drew it last.
+pub struct Menu<'a> {
+    selection: &'a Selection,
+    options: Vec<String>,
+    title: Option<String>,
+    border_role: Role,
+}
+
+impl<'a> Menu<'a> {
+    pub fn new<S: Into<String>>(
+        selection: &'a Selection,
+        options: impl IntoIterator<Item = S>,
+    ) -> Self {
+        Self {
+            selection,
+            options: options.into_iter().map(Into::into).collect(),
+            title: None,
+            border_role: Role::Accent,
+        }
+    }
+
+    pub fn title(mut self, title: impl Into<String>) -> Self {
+        self.title = Some(title.into());
+        self
+    }
+
+    pub fn border_role(mut self, role: Role) -> Self {
+        self.border_role = role;
+        self
+    }
+}
+
+impl View for Menu<'_> {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let area = canvas.area();
+        if area.width < 2 || area.height < 2 {
+            return;
+        }
+        // An overlay that lets the frame beneath show through is not an overlay.
+        canvas.clear();
+        canvas.border(area, self.border_role);
+        if let Some(title) = &self.title {
+            let room = area.width.saturating_sub(4);
+            canvas.put_truncated(2, 0, title, room, Role::Muted);
+        }
+
+        let mut inner = canvas.inset(Padding::all(1));
+        let list = List::new(self.options.iter().map(String::as_str))
+            .selection(self.selection)
+            .highlight();
+        list.render(&mut inner);
+
+        // More choices than rows: say so on the frame, or the list looks like the whole of it.
+        let rows = area.height.saturating_sub(2);
+        let window = self.selection.window(rows, self.options.len());
+        let right = i32::from(area.width) - 1;
+        if window.start > 0 {
+            canvas.set(right, 0, mark::ARROW_UP, self.border_role);
+        }
+        if window.end < self.options.len() {
+            canvas.set(right, i32::from(area.height) - 1, mark::ARROW_DOWN, self.border_role);
+        }
+    }
+
+    fn constraint(&self) -> Constraint {
+        Constraint::Length(u16::try_from(self.options.len()).unwrap_or(u16::MAX).saturating_add(2))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1323,6 +1727,15 @@ mod tests {
         assert_eq!(row(&hints, 11), "SPACE pause");
     }
 
+    #[test]
+    fn a_hint_that_does_not_fit_whole_is_dropped_rather_than_clipped() {
+        let hints = Hints::new().key("TAB", "next").key("ESC", "quit");
+        assert_eq!(hints.width(), 8 + 3 + 8);
+        // One column short of the second hint: it goes entirely, not half of it.
+        assert_eq!(row(&hints, 18), "TAB next          ");
+        assert_eq!(row(&hints, 19), "TAB next   ESC quit");
+    }
+
     // ---- List ---------------------------------------------------------------------------
 
     #[test]
@@ -1508,6 +1921,194 @@ mod tests {
         let editor = Editor::with("abc");
         for width in 0..5u16 {
             let _ = row(&Input::new(&editor).prompt("long prompt"), width);
+        }
+    }
+
+    // ---- Button -------------------------------------------------------------------------
+
+    #[test]
+    fn a_button_is_its_label_between_brackets() {
+        assert_eq!(row(&Button::new("Save"), 8), "\u{2039} Save \u{203a}");
+        assert_eq!(Button::width("Save"), 8);
+    }
+
+    #[test]
+    fn a_button_centres_itself_in_a_wider_slot() {
+        assert_eq!(row(&Button::new("Go"), 10), "  \u{2039} Go \u{203a}  ");
+    }
+
+    #[test]
+    fn a_focused_button_is_lifted_onto_the_surface_and_an_unfocused_one_is_not() {
+        let mut buffer = Buffer::new(8, 1);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        Button::new("Save").focused(true).render(&mut canvas);
+        assert_eq!(buffer.get(0, 0).expect("cell").style.bg, Some(Theme::LAYA.surface));
+
+        let mut buffer = Buffer::new(8, 1);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        Button::new("Save").render(&mut canvas);
+        assert_ne!(buffer.get(0, 0).expect("cell").style.bg, Some(Theme::LAYA.surface));
+    }
+
+    #[test]
+    fn a_disabled_button_never_looks_focused_even_if_it_is_told_it_is() {
+        let mut buffer = Buffer::new(8, 1);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        Button::new("Save").focused(true).disabled().render(&mut canvas);
+        assert_ne!(buffer.get(0, 0).expect("cell").style.bg, Some(Theme::LAYA.surface));
+        assert_eq!(buffer.get(2, 0).expect("cell").style.fg, Some(Theme::LAYA.dim));
+    }
+
+    #[test]
+    fn a_button_wider_than_its_slot_truncates_instead_of_overflowing() {
+        let drawn = row(&Button::new("Save everything"), 9);
+        assert_eq!(text_width(&drawn), 9);
+        assert!(drawn.starts_with('\u{2039}') && drawn.ends_with('\u{203a}'), "got {drawn:?}");
+    }
+
+    #[test]
+    fn a_button_measures_its_label_in_columns_not_bytes() {
+        assert_eq!(Button::width("\u{754c}\u{754c}"), 8);
+    }
+
+    // ---- Tabs ---------------------------------------------------------------------------
+
+    #[test]
+    fn tabs_underline_the_selected_label_and_nothing_else() {
+        let selection = Selection::at(1);
+        let tabs = Tabs::new(["ONE", "TWO"]).selection(&selection).focused(true);
+        assert_eq!(tabs.constraint(), Constraint::Length(2));
+        let drawn = rows(&tabs, 12, 2);
+        assert_eq!(drawn[0], "ONE   TWO   ");
+        assert_eq!(drawn[1], "      \u{2500}\u{2500}\u{2500}   ");
+    }
+
+    #[test]
+    fn an_unfocused_tab_bar_still_shows_where_you_are() {
+        let selection = Selection::at(0);
+        let tabs = Tabs::new(["ONE", "TWO"]).selection(&selection);
+        let drawn = rows(&tabs, 12, 2);
+        assert_eq!(drawn[1], "\u{2500}\u{2500}\u{2500}         ", "the underline stays");
+
+        let mut buffer = Buffer::new(12, 2);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        tabs.render(&mut canvas);
+        let rule = buffer.get(0, 1).expect("cell").style.fg;
+        assert_eq!(rule, Some(Theme::LAYA.dim), "but it stops claiming the keys");
+    }
+
+    #[test]
+    fn tabs_that_do_not_fit_are_clipped_at_the_edge_rather_than_wrapping() {
+        let selection = Selection::new();
+        let tabs = Tabs::new(["ALPHA", "BETA", "GAMMA"]).selection(&selection);
+        let drawn = row(&tabs, 10);
+        assert_eq!(text_width(&drawn), 10);
+    }
+
+    #[test]
+    fn tabs_report_the_width_they_want() {
+        let tabs = Tabs::new(["ONE", "TWO"]).gap(3);
+        assert_eq!(tabs.width(), 9);
+        assert_eq!(Tabs::new(["ONE"]).gap(3).width(), 3, "one tab has no gap after it");
+    }
+
+    #[test]
+    fn a_one_row_tab_bar_drops_the_underline() {
+        let selection = Selection::new();
+        let tabs = Tabs::new(["ONE"]).selection(&selection).no_underline();
+        assert_eq!(tabs.constraint(), Constraint::Length(1));
+    }
+
+    // ---- Select -------------------------------------------------------------------------
+
+    #[test]
+    fn a_closed_select_shows_the_current_choice_and_a_caret() {
+        let dropdown = Dropdown::at(1);
+        let select = Select::new(&dropdown, ["red", "green", "blue"]);
+        assert_eq!(row(&select, 14), "[ green    \u{25be} ]");
+    }
+
+    #[test]
+    fn an_open_select_turns_its_caret_over() {
+        let mut dropdown = Dropdown::new();
+        dropdown.open();
+        let drawn = row(&Select::new(&dropdown, ["red"]), 12);
+        assert!(drawn.contains('\u{25b4}'), "got {drawn:?}");
+    }
+
+    #[test]
+    fn a_select_records_where_it_drew_so_the_list_can_find_it() {
+        let dropdown = Dropdown::new();
+        let mut buffer = Buffer::new(30, 4);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        let mut slot = canvas.sub(Rect::new(6, 2, 12, 1));
+        Select::new(&dropdown, ["a"]).render(&mut slot);
+        assert_eq!(dropdown.field(), Rect::new(6, 2, 12, 1));
+    }
+
+    #[test]
+    fn a_select_over_no_choices_says_so_rather_than_drawing_an_empty_field() {
+        let dropdown = Dropdown::new();
+        let select = Select::new(&dropdown, Vec::<String>::new()).empty("none");
+        assert_eq!(row(&select, 12), "[ none   \u{25be} ]");
+    }
+
+    #[test]
+    fn a_select_sizes_itself_to_its_widest_choice() {
+        assert_eq!(Select::width(&["red", "magenta"]), 13);
+    }
+
+    #[test]
+    fn a_select_squeezed_to_nothing_does_not_panic() {
+        let dropdown = Dropdown::new();
+        for width in 0..8u16 {
+            let _ = row(&Select::new(&dropdown, ["something long"]), width);
+        }
+    }
+
+    // ---- Menu ---------------------------------------------------------------------------
+
+    #[test]
+    fn a_menu_frames_its_choices_and_marks_the_current_one() {
+        let selection = Selection::at(1);
+        let menu = Menu::new(&selection, ["red", "green"]);
+        let drawn = rows(&menu, 11, 4);
+        assert_eq!(
+            drawn[0],
+            "\u{250c}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2510}"
+        );
+        assert_eq!(drawn[1], "\u{2502}  red    \u{2502}");
+        assert_eq!(drawn[2], "\u{2502}\u{203a} green  \u{2502}");
+    }
+
+    #[test]
+    fn a_menu_paints_over_what_was_underneath_it() {
+        let mut buffer = Buffer::new(11, 4);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        canvas.run(0, 1, '#', 11, Role::Text);
+        let selection = Selection::new();
+        Menu::new(&selection, ["red"]).render(&mut canvas);
+        assert!(!buffer.row_text(1).contains('#'), "the frame beneath showed through");
+    }
+
+    #[test]
+    fn a_menu_with_more_choices_than_rows_says_which_way_the_rest_are() {
+        let selection = Selection::at(5);
+        let options = ["a", "b", "c", "d", "e", "f"];
+        let drawn = rows(&Menu::new(&selection, options), 8, 4);
+        assert!(drawn[0].contains(mark::ARROW_UP), "no hint that choices are above: {drawn:?}");
+
+        let selection = Selection::at(0);
+        let drawn = rows(&Menu::new(&selection, options), 8, 4);
+        assert!(drawn[3].contains(mark::ARROW_DOWN), "no hint that choices are below: {drawn:?}");
+    }
+
+    #[test]
+    fn a_menu_too_small_to_frame_draws_nothing_rather_than_half_a_border() {
+        let selection = Selection::new();
+        for (width, height) in [(0, 0), (1, 1), (1, 4), (4, 1)] {
+            let drawn = rows(&Menu::new(&selection, ["red"]), width, height);
+            assert!(drawn.iter().all(|row| row.trim().is_empty()), "got {drawn:?}");
         }
     }
 }

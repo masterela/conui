@@ -68,6 +68,19 @@ impl<'a> Canvas<'a> {
         Rect::sized(self.width, self.height)
     }
 
+    /// This canvas's region in *buffer* coordinates.
+    ///
+    /// Almost nothing needs this — a widget that reads absolute coordinates has usually
+    /// misunderstood that its own origin is `(0, 0)`. Two things genuinely do: something that
+    /// wants to draw an overlay attached to where it landed (a dropdown's list, a tooltip), and
+    /// something that wants to know whether a mouse position fell inside it. Both have to speak
+    /// the buffer's coordinates, because both are resolved outside the view tree.
+    pub fn screen_area(&self) -> Rect {
+        let x = self.origin_x.clamp(0, u16::MAX as i32) as u16;
+        let y = self.origin_y.clamp(0, u16::MAX as i32) as u16;
+        Rect::new(x, y, self.width, self.height)
+    }
+
     pub const fn width(&self) -> u16 {
         self.width
     }
@@ -893,5 +906,25 @@ mod tests {
         assert_eq!(text_width("abc"), 3);
         assert_eq!(text_width("界界"), 4);
         assert_eq!(text_width(""), 0);
+    }
+
+    #[test]
+    fn a_canvas_knows_where_it_is_even_though_it_draws_as_if_it_were_at_the_origin() {
+        let mut buffer = Buffer::new(20, 10);
+        let mut canvas = Canvas::new(&mut buffer, Rect::new(2, 3, 8, 4), Theme::LAYA);
+        assert_eq!(canvas.area(), Rect::sized(8, 4), "local coordinates start at the origin");
+        assert_eq!(canvas.screen_area(), Rect::new(2, 3, 8, 4));
+
+        let nested = canvas.sub(Rect::new(1, 1, 4, 2));
+        assert_eq!(nested.screen_area(), Rect::new(3, 4, 4, 2), "nesting accumulates");
+    }
+
+    #[test]
+    fn a_canvas_pushed_off_the_left_edge_reports_a_position_on_screen() {
+        let mut buffer = Buffer::new(20, 10);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        let nested = canvas.sub(Rect::new(0, 0, 4, 1));
+        // A negative origin is reachable through repeated insets; it must not wrap to 65535.
+        assert_eq!(nested.screen_area().x, 0);
     }
 }
