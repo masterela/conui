@@ -268,6 +268,47 @@ cargo run -p conui --example monitor
 **Expect:** clicking in the shell does nothing unusual. If escape sequences appear when you click, the
 terminal was left reporting mouse events — `?1006l ?1002l ?1000l` on the way out did not land.
 
+One more, and it needs a scratch program because nothing in the box calls it. `App::set_mouse` turns
+reporting on and off *while running*, which is the only method on `App` that no test and no example
+reaches — a unit test cannot build an `App` without taking over the terminal, and none of the four
+examples has a reason to toggle it:
+
+```sh
+cat > crates/conui/examples/scratch-mouse.rs <<'RUST'
+use conui::widget::Text;
+use conui::{App, Config, Event, KeyCode};
+
+fn main() -> std::io::Result<()> {
+    let mut app = App::with(Config::new().mouse(true))?;
+    let mut on = true;
+    let mut last = String::from("move the pointer");
+    while app.is_running() {
+        for event in app.poll()? {
+            match event {
+                Event::Key(key) if key.code == KeyCode::Char('m') => {
+                    on = !on;
+                    app.set_mouse(on)?;
+                    last = format!("reporting {}", if on { "on" } else { "off" });
+                }
+                Event::Key(key) if key.code == KeyCode::Char('q') => app.quit(),
+                Event::Mouse(mouse) => last = format!("{:?} at {},{}", mouse.kind, mouse.column, mouse.row),
+                _ => {}
+            }
+        }
+        app.draw(|frame| frame.render_full(&Text::new(&last).accent()))?;
+    }
+    app.leave()
+}
+RUST
+cargo run -p conui --example scratch-mouse
+rm crates/conui/examples/scratch-mouse.rs
+```
+
+**Expect:** moving the pointer updates the line. `M` says `reporting off` and the line then stops
+changing however much you move or click. `M` again and it resumes. `Q` quits, and the shell is clean
+afterwards — the check at the end of this item applies doubly here, since the last thing this program
+did to the terminal may have been to turn reporting *on*.
+
 > Exercises `Config::mouse`, `Painter::enter_screen`/`leave_screen`, the SGR mouse parser, and every
 > `Hits` region in the examples.
 

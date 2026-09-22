@@ -43,6 +43,20 @@ use crate::theme::{Role, Theme};
 /// held-down key or a big paste arrives in a handful of reads rather than hundreds.
 const READ_CHUNK: usize = 4096;
 
+/// Longest [`App::poll`] will block for input without re-reading the window size.
+///
+/// Only reached when there is no tick rate at all. `None` means "do not redraw on a timer", which
+/// is a reasonable thing for an editor to ask for — but the window size is polled at the top of
+/// `poll` rather than delivered by `SIGWINCH`, so a wait with no deadline is a wait no resize can
+/// arrive through. It is worse than it sounds: the poll retries on `EINTR` by design, so even a
+/// signal cannot break it. Without this cap, a `no_tick` app resized by the user keeps drawing at
+/// the old size until a key is pressed, and nothing about that looks like a resize bug.
+///
+/// A tenth of a second is under what a person notices while dragging a window edge, and costs one
+/// `ioctl` plus a diff of a buffer that has not changed — which emits nothing. That is a different
+/// order of thing from a frame, so it does not undo what asking for no tick was for.
+const SIZE_POLL: Duration = Duration::from_millis(100);
+
 /// Everything about an app that is decided before the first frame.
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
@@ -50,8 +64,9 @@ pub struct Config {
     pub theme: Theme,
     /// How long [`App::poll`] will wait for input before returning so you can redraw.
     ///
-    /// `None` blocks until something happens, which is right for an editor and wrong for
-    /// anything that animates: with no tick there is no frame to animate on.
+    /// `None` returns only when something happens, which is right for an editor and wrong for
+    /// anything that animates: with no tick there is no frame to animate on. It is not an
+    /// unbounded wait even so — see [`Config::no_tick`].
     pub tick_rate: Option<Duration>,
     /// Below this size the app's own view is replaced by a resize prompt.
     pub min_size: (u16, u16),
@@ -92,7 +107,11 @@ impl Config {
         self.tick_rate(rate)
     }
 
-    /// Wait indefinitely for input, drawing only in response to events.
+    /// Draw only in response to events, with no redraw timer.
+    ///
+    /// A resize is still one of those events: the loop keeps waking often enough to read the window
+    /// size, which is polled rather than signalled. What is given up is the steady frame, so
+    /// anything that animates needs [`Config::fps`] instead.
     pub fn no_tick(mut self) -> Self {
         self.tick_rate = None;
         self
@@ -217,10 +236,16 @@ impl App {
         self.terminal.force_repaint();
     }
 
-    /// Change the poll deadline while running, or `None` to wait for input indefinitely.
+    /// Change the poll deadline while running, or `None` to stop ticking.
     ///
-    /// Worth doing when a screen stops animating: a tick the app has nothing to redraw for is a
-    /// wake-up that costs a frame and changes nothing.
+    /// Worth doing when a screen stops animating — a paused view, a modal with nothing moving in
+    /// it: a tick the app has nothing to redraw for is a wake-up that costs a frame and changes
+    /// nothing.
+    ///
+    /// `None` does not mean the loop blocks for ever. [`App::poll`] still wakes often enough to
+    /// notice the window being resized, because conui reads the size at the top of a poll rather
+    /// than trapping `SIGWINCH`, and a loop that truly blocked would reflow only on the next
+    /// keypress.
     pub fn set_tick_rate(&mut self, rate: Option<Duration>) {
         self.config.tick_rate = rate;
     }
@@ -280,7 +305,7 @@ impl App {
         }
 
         let wait = self.wait_budget();
-        if self.terminal.wait_readable(wait)? {
+        if self.terminal.wait_readable(Some(wait))? {
             let count = self.terminal.read_input(&mut self.read_buffer[..])?;
             if count == 0 {
                 // End of input: the other side of the tty is gone. Continuing would spin.
@@ -326,15 +351,15 @@ impl App {
 
     /// How long to block for input: until the next tick, or until the escape timeout if the
     /// parser is sitting on an ambiguous byte, whichever is sooner.
-    fn wait_budget(&self) -> Option<Duration> {
-        let tick =
-            self.config.tick_rate.map(|_| self.next_tick.saturating_duration_since(Instant::now()));
-        match (tick, self.parser.has_pending()) {
-            (Some(tick), true) => Some(tick.min(ESCAPE_TIMEOUT)),
-            (Some(tick), false) => Some(tick),
-            (None, true) => Some(ESCAPE_TIMEOUT),
-            (None, false) => None,
-        }
+    ///
+    /// Always bounded: with no tick rate the wait is [`SIZE_POLL`], because the only thing that
+    /// reads the window size is the top of the next `poll`.
+    fn wait_budget(&self) -> Duration {
+        wait_for(
+            self.config.tick_rate,
+            self.next_tick.saturating_duration_since(Instant::now()),
+            self.parser.has_pending(),
+        )
     }
 
     /// Move the tick deadline forward, skipping any deadlines already missed.
@@ -398,6 +423,23 @@ impl App {
     pub fn leave(&mut self) -> io::Result<()> {
         self.running = false;
         self.terminal.leave()
+    }
+}
+
+/// How long one poll may block, given the three things that bear on it.
+///
+/// A free function taking its inputs rather than a method reading them off `self`, because an `App`
+/// cannot be built in a test — constructing one takes over the terminal the test is running in — so
+/// anything left as a method here is untestable by construction. This is the piece of the loop most
+/// worth testing: every arm of it is a different kind of wrong if it is missed.
+fn wait_for(tick_rate: Option<Duration>, until_tick: Duration, pending_escape: bool) -> Duration {
+    match (tick_rate, pending_escape) {
+        // A held-back `ESC` must not outlive the timeout, even if the next frame is further off.
+        (Some(_), true) => until_tick.min(ESCAPE_TIMEOUT),
+        (Some(_), false) => until_tick,
+        (None, true) => ESCAPE_TIMEOUT,
+        // Not `None`: see `SIZE_POLL`.
+        (None, false) => SIZE_POLL,
     }
 }
 
@@ -470,6 +512,41 @@ mod tests {
     #[test]
     fn no_tick_means_block_forever() {
         assert_eq!(Config::new().no_tick().tick_rate, None);
+    }
+
+    #[test]
+    fn a_ticking_app_waits_until_its_next_frame() {
+        let until = Duration::from_millis(33);
+        assert_eq!(wait_for(Some(Duration::from_millis(33)), until, false), until);
+    }
+
+    #[test]
+    fn a_pending_escape_is_never_held_past_its_timeout() {
+        // The frame is a long way off and there is an ambiguous `ESC` in the parser. Waiting for
+        // the frame would hold a plain Escape keypress for the best part of a second.
+        let far = Duration::from_secs(1);
+        assert_eq!(wait_for(Some(far), far, true), ESCAPE_TIMEOUT);
+        assert_eq!(wait_for(None, far, true), ESCAPE_TIMEOUT);
+        // But a frame sooner than the timeout still wins: it comes first.
+        let soon = Duration::from_millis(5);
+        assert_eq!(wait_for(Some(soon), soon, true), soon);
+    }
+
+    #[test]
+    fn no_tick_still_wakes_often_enough_to_notice_a_resize() {
+        // The arm this whole constant exists for. `None` here used to mean an unbounded wait, and
+        // since the window size is read at the top of `poll` rather than delivered by a signal,
+        // that meant a `no_tick` app kept drawing at the old size until a key was pressed.
+        assert_eq!(wait_for(None, Duration::ZERO, false), SIZE_POLL);
+        assert!(SIZE_POLL <= Duration::from_millis(100), "a resize has to look immediate");
+    }
+
+    #[test]
+    fn keeping_ctrl_c_is_opt_in_and_quitting_on_it_is_the_default() {
+        // Both halves matter. A default that did not quit would leave every app that forgot to
+        // handle the key unkillable from the keyboard, which is the worst failure in this file.
+        assert!(Config::new().quit_on_ctrl_c);
+        assert!(!Config::new().keep_ctrl_c().quit_on_ctrl_c);
     }
 
     #[test]

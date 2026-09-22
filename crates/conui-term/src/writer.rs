@@ -412,6 +412,62 @@ mod tests {
     }
 
     #[test]
+    fn replacing_the_capabilities_changes_what_the_next_write_emits() {
+        // The escape hatch for a terminal whose abilities are learned after the painter exists —
+        // a response to a query, or a `NO_COLOR` read late. Asserting on the bytes rather than on
+        // the field is the point: a depth that is stored but not consulted would pass a field
+        // check and still paint the wrong screen.
+        let mut painter = painter(ColorDepth::NoColor);
+        let mut buffer = Buffer::new(1, 1);
+        buffer.set_symbol(0, 0, "a", Style::new().fg(Color::hex("#62f5b5")));
+
+        painter.draw(&buffer.full_repaint(), 1).unwrap();
+        painter.flush().unwrap();
+        // A position, a reset, the glyph — and not the colour that was asked for.
+        let plain = String::from_utf8_lossy(painter.get_ref()).to_string();
+        assert!(!plain.contains("38;2;"), "NoColor must not emit a colour: {plain:?}");
+
+        painter.set_capabilities(Capabilities::plain(ColorDepth::TrueColor));
+        assert_eq!(painter.capabilities().color_depth, ColorDepth::TrueColor);
+        painter.draw(&buffer.full_repaint(), 1).unwrap();
+        painter.flush().unwrap();
+        let output = String::from_utf8(painter.into_inner()).unwrap();
+        assert!(
+            output.contains("38;2;98;245;181"),
+            "the new depth must reach the wire: {output:?}"
+        );
+    }
+
+    #[test]
+    fn replacing_the_capabilities_forgets_the_style_the_terminal_was_assumed_to_be_in() {
+        // The reason `set_capabilities` cannot be a plain field assignment: the cached style was
+        // recorded in the old depth's terms, so anything still trusting it would skip a sequence
+        // the terminal never received.
+        let mut painter = painter(ColorDepth::NoColor);
+        painter.style = Some(ResolvedStyle::default());
+        painter.cursor = Some(Pos::new(4, 2));
+        painter.set_capabilities(Capabilities::plain(ColorDepth::TrueColor));
+        assert!(painter.style.is_none());
+        assert!(painter.cursor.is_none());
+    }
+
+    #[test]
+    fn the_sink_can_be_read_without_being_taken() {
+        // `into_inner` consumes the painter, which is no use halfway through a test that wants to
+        // keep drawing. This is the borrow that lets one.
+        let mut painter = painter(ColorDepth::NoColor);
+        let mut buffer = Buffer::new(2, 1);
+        buffer.set_str(0, 0, "hi", Style::EMPTY, 2);
+        painter.draw(&buffer.full_repaint(), 2).unwrap();
+        painter.flush().unwrap();
+
+        assert!(String::from_utf8_lossy(painter.get_ref()).contains("hi"));
+        // Still usable afterwards, which is the whole difference from `into_inner`.
+        painter.flush().unwrap();
+        assert!(String::from_utf8_lossy(painter.get_ref()).contains("hi"));
+    }
+
+    #[test]
     fn a_single_changed_cell_costs_one_move_and_one_glyph() {
         let previous = Buffer::new(10, 2);
         let mut next = previous.clone();

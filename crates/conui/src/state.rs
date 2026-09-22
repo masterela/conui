@@ -1794,6 +1794,28 @@ mod tests {
     }
 
     #[test]
+    fn a_ring_can_start_somewhere_other_than_the_beginning() {
+        // What restoring a screen needs: the focused field was saved, and the ring is rebuilt
+        // around it. Starting at the first entry and tabbing forwards N times would work and would
+        // be wrong the day the order changes.
+        let focus = Focus::starting_at([Id::A, Id::B, Id::C], Id::C);
+        assert_eq!(focus.current(), Some(Id::C));
+        assert_eq!(focus.len(), 3, "the whole ring is still there, only the cursor moved");
+    }
+
+    #[test]
+    fn starting_at_something_that_is_not_there_falls_back_to_the_first_entry() {
+        // A saved id can outlive the screen that had it — a field removed between releases, or a
+        // ring that varies with a setting. Landing on nothing would be worse than landing at the
+        // start, because a ring with no focus takes no keys.
+        let focus = Focus::starting_at([Id::A, Id::B], Id::C);
+        assert_eq!(focus.current(), Some(Id::A));
+
+        let empty = Focus::starting_at([], Id::A);
+        assert_eq!(empty.current(), None, "there is no first entry to fall back to");
+    }
+
+    #[test]
     fn next_and_prev_wrap_in_both_directions() {
         let mut focus = ring();
         focus.prev();
