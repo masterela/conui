@@ -516,9 +516,9 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 
 | Platform | Status |
 |---|---|
-| macOS | Developed and tested here (Apple Silicon, Darwin 25). |
-| Linux | Same `rustix` termios path as macOS; the platform differences are covered but it has not been run on a Linux box yet. |
-| Windows | `crates/conui-term/src/platform/windows.rs` is written against the Console API — `ENABLE_VIRTUAL_TERMINAL_INPUT` and `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, screen-buffer size, a `WaitForSingleObject` readable poll, and mode restore on exit — but **has not been compiled or run**: there is no Windows toolchain on the development machine, and no cross target either. `.github/workflows/ci.yml` exists to answer this — a `windows-latest` job that builds and tests the workspace — but the repository has no remote yet, so it has never run. Treat it as unverified. |
+| macOS | Developed and tested here (Apple Silicon, Darwin 25), and in CI on `macos-latest`. |
+| Linux | Builds and passes the whole suite in CI on `ubuntu-latest`, over the same `rustix` termios path as macOS. Not yet driven interactively in a Linux terminal. |
+| Windows | `crates/conui-term/src/platform/windows.rs` — `ENABLE_VIRTUAL_TERMINAL_INPUT` and `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, screen-buffer size, a `WaitForSingleObject` readable poll, and mode restore on exit — **compiles, and the whole suite passes**, on `windows-latest` in CI. It has never been driven interactively in a real console, so what remains unproven is the part no headless test can reach: that raw mode, VT mode and the escape output actually behave in conhost, Windows Terminal and PowerShell. |
 
 ## Development
 
@@ -534,9 +534,11 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 `.github/workflows/ci.yml` runs exactly those commands on `macos-latest`, `ubuntu-latest` and
-`windows-latest`, plus rustfmt, clippy and a `1.85` MSRV check — a `rust-version` nothing verifies is
-one that drifts the first time a newer API looks convenient. The Windows job is the reason the file
-exists: it is the only thing that will compile `platform/windows.rs`.
+`windows-latest`, plus rustfmt once and a `1.85` MSRV check — a `rust-version` nothing verifies is one
+that drifts the first time a newer API looks convenient. Clippy runs on *every* platform rather than
+just Linux, because the first run of this workflow found dead code in `platform/windows.rs` that a
+Linux-only lint job structurally cannot see, and that file is the one with no local compiler to check
+it.
 
 Test counts by crate: `conui` 259, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 
