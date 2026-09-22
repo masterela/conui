@@ -25,7 +25,11 @@ use windows_sys::Win32::System::Console::{
 use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
 
 /// The console modes to restore on exit.
-#[derive(Clone, Copy, Debug)]
+///
+/// Deliberately not `Copy`, even though two `DWORD`s would be: the Unix `SavedMode` is a `Termios`
+/// and only `Clone`, and the shared code above the seam has to compile against both. A type that is
+/// `Copy` on one platform makes `.clone()` correct there and a lint error here.
+#[derive(Clone, Debug)]
 pub struct SavedMode {
     input: CONSOLE_MODE,
     output: CONSOLE_MODE,
