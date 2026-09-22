@@ -13,7 +13,7 @@ use std::io;
 use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    HANDLE, INVALID_HANDLE_VALUE, WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Console::{
     CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_ECHO_INPUT,
@@ -116,6 +116,10 @@ pub fn restore_mode(saved: &SavedMode) -> io::Result<()> {
 ///
 /// The console's buffer is usually far taller than the window; sizing to it would draw most
 /// of the frame off-screen.
+///
+/// Windows has no `SIGWINCH`, so a resize is discovered by calling this again — which the event
+/// loop does every frame on every platform anyway, for the same reason it does not install a
+/// signal handler on Unix.
 pub fn window_size() -> io::Result<(u16, u16)> {
     let handle = stdout_handle()?;
     let mut info: CONSOLE_SCREEN_BUFFER_INFO = unsafe { std::mem::zeroed() };
@@ -204,10 +208,3 @@ pub fn read_input(buffer: &mut [u8]) -> io::Result<usize> {
     // UTF-16 to UTF-8 translation, which is fiddly to redo correctly by hand.
     io::stdin().lock().read(buffer)
 }
-
-/// Windows has no `SIGWINCH`; resizes are discovered by polling [`window_size`], which is
-/// what the event loop does on every frame anyway.
-pub const RESIZE_IS_POLLED: bool = true;
-
-// Keep the import used on both paths without a warning when features change.
-const _: Option<unsafe extern "system" fn(HANDLE) -> i32> = Some(CloseHandle);
