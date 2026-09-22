@@ -629,13 +629,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # every public item is documented
 ```
 
-The three lower crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build
-warning rather than something a reader discovers on docs.rs. `conui` itself is getting there a module
-at a time: `app`, `canvas`, `frame`, `layout`, `state`, `theme`, `typography` and `view` carry
-`#[warn(missing_docs)]` and are done; only `widget` is left. A module with the
-attribute cannot regress,
-which is the part that matters — the alternative was one enormous change, or a crate-level `allow`
-that would have made the lint decorative.
+All four crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build warning
+rather than something a reader discovers on docs.rs. `conui` got there a module at a time — nine
+changes, each one switching the lint on for a single `pub mod` and writing whatever that module was
+missing — because the alternative was one unreviewable change of 191 doc comments, or a crate-level
+`allow` that would have made the lint decorative. A module that had been through could not regress
+while the others were still being written, which is the part that mattered; now the attribute sits at
+the crate root, where it also covers whatever gets added next.
 
 `.github/workflows/ci.yml` runs exactly those commands on `macos-latest`, `ubuntu-latest` and
 `windows-latest`, plus rustfmt once, rustdoc once and a `1.85` MSRV check — a `rust-version` nothing
