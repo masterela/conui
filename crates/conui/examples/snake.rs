@@ -18,6 +18,7 @@
 
 use std::collections::VecDeque;
 use std::io;
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use conui::view::View;
@@ -52,7 +53,19 @@ const PANEL_WIDTH: u16 = 33;
 
 const HEAD_COLOR: Color = Color::hex("#dcfff0");
 
-fn main() -> io::Result<()> {
+/// Returning `io::Result` from `main` would print the error with `Debug`, wrapping the sentence the
+/// user needs in `Error: Custom { .. }`. This prints the sentence.
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("snake: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> io::Result<()> {
     // `--dump [steps]` prints one composed frame as plain text and exits. Useful for a README,
     // for a diff against the reference design, and for checking the layout without a terminal.
     let mut args = std::env::args().skip(1);
