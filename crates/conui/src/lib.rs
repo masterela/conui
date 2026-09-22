@@ -54,7 +54,7 @@
 //! - [`conui_term`] — the terminal itself: raw mode, the alternate screen, capability detection,
 //!   and the escape-sequence writer. Hand-written against `rustix` and `windows-sys`, with no
 //!   TUI dependency anywhere in the tree.
-//! - [`conui_input`] — an incremental parser from bytes to [`Event`](conui_input::Event)s.
+//! - [`conui_input`] — an incremental parser from bytes to [`Event`]s.
 //!
 //! Pick any level. A program that only wants "print a table with colour" can use `conui_cell`
 //! and its own `print!`; one that wants a full-screen app uses [`App`].

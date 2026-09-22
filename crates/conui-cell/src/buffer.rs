@@ -13,8 +13,11 @@ use crate::{Cell, Rect, Style, Symbol};
 /// One changed cell, as produced by [`Buffer::diff`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Patch {
+    /// Column to move the cursor to.
     pub x: u16,
+    /// Row to move the cursor to.
     pub y: u16,
+    /// What that cell should now contain.
     pub cell: Cell,
 }
 
@@ -41,10 +44,12 @@ impl Buffer {
         Self { width, height, cells: vec![cell; width as usize * height as usize] }
     }
 
+    /// Columns across.
     pub const fn width(&self) -> u16 {
         self.width
     }
 
+    /// Rows down.
     pub const fn height(&self) -> u16 {
         self.height
     }
@@ -54,6 +59,7 @@ impl Buffer {
         Rect::sized(self.width, self.height)
     }
 
+    /// Every cell in row-major order, for a test or a custom writer.
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
@@ -65,10 +71,12 @@ impl Buffer {
         Some(y as usize * self.width as usize + x as usize)
     }
 
+    /// The cell at `x`, `y`, or `None` when that is off the buffer.
     pub fn get(&self, x: u16, y: u16) -> Option<&Cell> {
         self.index_of(x, y).map(|index| &self.cells[index])
     }
 
+    /// The cell at `x`, `y` to write into, or `None` when that is off the buffer.
     pub fn get_mut(&mut self, x: u16, y: u16) -> Option<&mut Cell> {
         self.index_of(x, y).map(|index| &mut self.cells[index])
     }

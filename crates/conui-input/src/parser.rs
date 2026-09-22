@@ -56,6 +56,7 @@ pub struct Parser {
 }
 
 impl Parser {
+    /// A parser with nothing buffered.
     pub fn new() -> Self {
         Self::default()
     }
