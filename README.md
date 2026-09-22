@@ -83,7 +83,7 @@ Tasks persist as a markdown checklist in `$CONUI_TODO_FILE`, or `~/.conui-todo.m
 clickable, and clicking a task's tick ticks it — resolved against where the list drew itself last
 frame, which is the only thing that knows how far it had scrolled. It is a real program in under 700
 lines, and its own `#[cfg(test)]` module drives the actual key and mouse handlers and asserts on
-rendered rows — 26 tests, no terminal involved.
+rendered rows — 27 tests, no terminal involved.
 
 The third demo is the one with controls: a focus ring walked with `Tab`, tabs, buttons, a text
 field, and dropdowns whose lists are drawn over everything else — all of it reachable with the mouse
@@ -125,6 +125,60 @@ that pane opens a find field in the footer and `n` repeats the search: the viewp
 that brings the match into view, and the pane is composed from a table so that the search can count
 the row a word is on — a layout will not tell you that. `--dump` takes `--open` and `--tab N` so any
 state of it can be printed as text, which is how most of its tests assert on the layout.
+
+The fourth is the one with a job. The other three own everything on their screens, which makes them
+good demonstrations and weak evidence: nothing under them changes unless a key is pressed. This one
+reads the machine once a second.
+
+```
+  CONUI  /  MONITOR                                                 studio.local · up 4d 02:11
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  CPU  ▂▄▆▇▇▇▆▅▄▄▄▃▃▂▂▂▂▂▂▃▃▃▃▃             34%   MEM  ▄▄▄▅▅▅▅▅▅▄▄▄▄▄▄▄▄▅▅▅▅▄▄  9.1 GB / 16 GB
+       ████████░░░░░░░░░░░░░░░░                        █████████████░░░░░░░░░░
+
+  PROCESSES · CPU ↓                                                 MACHINE
+        PID   CPU%       MEM  COMMAND                               CORES                    8
+          0  124.0    1.1 GB  kernel_task                           PROCS                    8
+        182   81.0    742 MB  WindowServer                          SHOWN                    8
+  ›    4821   62.0    205 MB  cargo                                 VIA              a fixture
+       4832   58.0    464 MB  rustc
+        311    7.0     92 MB  mds_stores                            cargo · 4821
+       1204    0.9     12 MB  monitor                               CPU                   62.0
+         97    0.4    6.0 MB  fseventsd                             MEM            205 MB · 1%
+         93      —     31 MB  logd                                  THREADS                  9
+                                                                    STATE              running
+
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  ↑/↓ move  C cpu  M mem  P pid  N name  R reverse  / filter  SPACE pause  Q quit
+```
+
+```sh
+cargo run -p conui --example monitor
+```
+
+Sort by any column with a key or by clicking its heading, `/` to filter by name or pid, `SPACE` to
+freeze the figures while still moving about in them. Two things here that a self-contained demo never
+has to face:
+
+**The list re-sorts under the cursor.** A `Selection` holds a row *index*, and an index is a claim
+about an ordering — so the moment a sample arrives with a process somewhere else, the cursor is on
+something the user never chose. The app keeps a pid instead and re-derives the index after every
+sample, sort and keystroke, which makes the selection a view of the focus rather than a second thing
+to keep in step. Five tests do nothing but move the machine around underneath it.
+
+**Some figures do not exist.** CPU percentage is not a value a machine holds; it is the difference
+between two readings of cumulative CPU time. So it is unknown until the second sample, and unknown
+for ever on a platform with nothing to read — which is why every figure on that screen is an `Option`
+and prints `—` rather than `0.0`. Zero is a claim, and calling a busy process idle is worse than
+admitting to not knowing. `logd` in the frame above is the case, and it sorts to the bottom whichever
+way the column points.
+
+The sampler is `ps`, `vm_stat` and `sysctl` on macOS, `/proc` on Linux and `tasklist` on Windows —
+shelled out to and parsed, because an example that needed a dependency conui does not have would
+misrepresent what the library costs. Windows therefore has no CPU figures at all, which is the same
+`—` path every platform takes for its first second. `--dump` renders a frozen fixture rather than
+this machine, so its output is identical on every platform and something a test can assert on; the
+live parsers are covered by tests that read the machine they are running on, in all three CI jobs.
 
 ## Quick start
 
@@ -555,13 +609,15 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace                  # 426 unit tests + 20 doctests
+cargo test --workspace                  # 426 unit tests + 19 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 27 more
 cargo test -p conui --example settings  # 55 more
+cargo test -p conui --example monitor   # 57 more, three of which read the machine they run on
 cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
+cargo run -p conui --example monitor
 cargo fmt --all                         # rustfmt.toml pins use_small_heuristics = "Max"
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # every public item is documented
