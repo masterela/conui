@@ -81,6 +81,7 @@ pub mod state;
 #[warn(missing_docs)]
 pub mod theme;
 pub mod typography;
+#[warn(missing_docs)]
 pub mod view;
 pub mod widget;
 
