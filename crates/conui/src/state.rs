@@ -23,11 +23,11 @@
 //! assert_eq!(editor.value(), "milk and eggs");
 //! ```
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ops::Range;
 
-use conui_cell::Rect;
-use conui_input::{KeyCode, KeyEvent, KeyEventKind, Modifiers};
+use conui_cell::{Padding, Pos, Rect};
+use conui_input::{KeyCode, KeyEvent, KeyEventKind, Modifiers, MouseEvent};
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::canvas::text_width;
@@ -142,13 +142,19 @@ impl Selection {
         self.clamp(len);
     }
 
-    /// Scroll the window without moving the selection, for a mouse wheel.
+    /// Move by `delta` rows, negative up, clamped at both ends. What a mouse wheel does.
     ///
-    /// The selection is left where it is even if it scrolls out of sight, matching what every
-    /// other scrollable thing does; the next keypress brings the window back to it.
-    pub fn scroll(&self, delta: i32, len: usize) {
-        let offset = self.offset.get() as i64 + i64::from(delta);
-        self.offset.set(offset.clamp(0, len.saturating_sub(1) as i64) as usize);
+    /// The wheel moves the *selection*, not a window of its own, because [`Selection::window`]
+    /// always contains the selection: an offset nudged on its own would be pulled straight back by
+    /// the next draw, so a wheel that only scrolled would look broken. A list that scrolls away
+    /// from its cursor is a different widget — it needs a viewport holding an offset nothing else
+    /// owns — and this is not it.
+    pub fn step(&mut self, delta: i32, len: usize) {
+        if delta < 0 {
+            self.selected = self.selected.saturating_sub(delta.unsigned_abs() as usize);
+        } else {
+            self.selected = self.selected.saturating_add(delta as usize).min(len.saturating_sub(1));
+        }
     }
 
     /// The rows a list of `len` items should draw into `height` rows, scrolling to keep the
@@ -170,6 +176,20 @@ impl Selection {
         offset = offset.min(len.saturating_sub(height));
         self.offset.set(offset);
         offset..(offset + height).min(len)
+    }
+
+    /// Which item a click at `pos` landed on, given the region the list drew into.
+    ///
+    /// Uses the offset recorded by the last [`Selection::window`], which is the only honest source:
+    /// the row under the pointer means nothing without knowing how far the list had scrolled when
+    /// it was drawn. `None` for a click outside the region or below the last item — clicking the
+    /// blank space under a short list should do nothing, not select the last row.
+    pub fn row_at(&self, area: Rect, pos: Pos, len: usize) -> Option<usize> {
+        if !area.contains(pos) {
+            return None;
+        }
+        let index = self.offset.get() + usize::from(pos.y - area.y);
+        (index < len).then_some(index)
     }
 }
 
@@ -510,6 +530,110 @@ impl<T: Copy + PartialEq> Focus<T> {
     }
 }
 
+// ---- Hits -------------------------------------------------------------------------------
+
+/// Where each control landed, so a click can find it.
+///
+/// [`Focus`] deliberately refuses to learn anything at render time, because the tab order is a
+/// decision you make, not a consequence of draw order. Hit-testing is the opposite: a click
+/// resolves against pixels that were actually on screen, so last frame's geometry is the *only*
+/// thing that can answer it. Hence a second, separate structure that does record during render.
+///
+/// Fill it with [`ViewExt::hit`](crate::view::ViewExt::hit) — a decorator that notes its child's
+/// region and then draws the child — and read it in your event handler:
+///
+/// ```
+/// use conui::view::{Column, ViewExt};
+/// use conui::widget::Button;
+/// use conui::{Buffer, Frame, Hits, Pos, Theme};
+///
+/// #[derive(Clone, Copy, PartialEq, Debug)]
+/// enum Id {
+///     Ok,
+///     Cancel,
+/// }
+///
+/// let hits = Hits::new();
+/// let screen = Column::new()
+///     .child(Button::new("OK").hit(&hits, Id::Ok).length(1))
+///     .child(Button::new("Cancel").hit(&hits, Id::Cancel).length(1));
+///
+/// let mut buffer = Buffer::new(20, 2);
+/// Frame::new(&mut buffer, Theme::LAYA).render_full(&screen);
+///
+/// assert_eq!(hits.at(Pos::new(3, 0)), Some(Id::Ok));
+/// assert_eq!(hits.at(Pos::new(3, 1)), Some(Id::Cancel));
+/// assert_eq!(hits.at(Pos::new(3, 9)), None);
+/// ```
+///
+/// Clear it at the top of every frame. A stale entry is worse than a missing one: it points at
+/// where a control used to be, which is exactly the bug that makes a UI feel haunted.
+#[derive(Debug, Default)]
+pub struct Hits<T> {
+    /// Interior mutability for the same reason [`Selection::offset`] needs it: rendering takes
+    /// `&self`, and rendering is when a region is known.
+    regions: RefCell<Vec<(T, Rect)>>,
+}
+
+impl<T: Copy> Clone for Hits<T> {
+    fn clone(&self) -> Self {
+        Self { regions: RefCell::new(self.regions.borrow().clone()) }
+    }
+}
+
+impl<T: Copy> Hits<T> {
+    pub fn new() -> Self {
+        Self { regions: RefCell::new(Vec::new()) }
+    }
+
+    /// Forget last frame's geometry. Call this before composing.
+    pub fn clear(&self) {
+        self.regions.borrow_mut().clear();
+    }
+
+    /// Note that `id` occupies `area`, in buffer coordinates.
+    pub fn record(&self, id: T, area: Rect) {
+        self.regions.borrow_mut().push((id, area));
+    }
+
+    /// Which control is at `pos`, if any.
+    ///
+    /// Searched last-recorded first, so the answer agrees with what the eye sees: an overlay drawn
+    /// after the form takes the click, because it is the thing covering that cell.
+    pub fn at(&self, pos: Pos) -> Option<T> {
+        self.regions.borrow().iter().rev().find(|(_, area)| area.contains(pos)).map(|(id, _)| *id)
+    }
+
+    /// Where `id` last drew itself, if it drew at all.
+    pub fn area_of(&self, id: T) -> Option<Rect>
+    where
+        T: PartialEq,
+    {
+        self.regions.borrow().iter().find(|(entry, _)| *entry == id).map(|(_, area)| *area)
+    }
+
+    /// `pos` relative to `id`'s own origin, or `None` if it fell outside.
+    ///
+    /// For a control with internal structure — which tab label, which row of a list — where the
+    /// widget can answer "at this offset, that one" but only the caller knows the offset.
+    pub fn local(&self, id: T, pos: Pos) -> Option<Pos>
+    where
+        T: PartialEq,
+    {
+        let area = self.area_of(id)?;
+        area.contains(pos).then(|| Pos::new(pos.x - area.x, pos.y - area.y))
+    }
+
+    /// How many regions were recorded this frame.
+    pub fn len(&self) -> usize {
+        self.regions.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.regions.borrow().is_empty()
+    }
+}
+
 /// An open-or-closed list of choices: the state behind a [`Select`](crate::widget::Select).
 ///
 /// The choices themselves are not in here. They are your data, passed to the widget each frame,
@@ -659,6 +783,53 @@ impl Dropdown {
         Rect::new(x, y, width, height)
     }
 
+    /// Which option the open list is showing at `pos`, if any.
+    ///
+    /// Nobody has to record the list's geometry for this: [`Dropdown::popup_area`] computes it the
+    /// same way the second pass drew it, and the rows inside it are resolved by the same
+    /// [`Selection`] the [`Menu`](crate::widget::Menu) scrolled.
+    pub fn option_at(&self, pos: Pos, len: usize, screen: Rect) -> Option<usize> {
+        if !self.open {
+            return None;
+        }
+        let rows = self.popup_area(len, screen).inset(Padding::all(1));
+        self.selection.row_at(rows, pos, len)
+    }
+
+    /// Apply the mouse events a dropdown owns, reporting whether the event was used.
+    ///
+    /// Closed, only a click on the field does anything — a wheel over a closed select is left
+    /// alone, because a form that silently changes a value while the user scrolls past it is a
+    /// classic way to lose someone's data. Open, it takes *everything*, for the same reason its
+    /// keyboard handler does: a click outside dismisses the list rather than falling through to
+    /// whatever happens to be under it.
+    ///
+    /// The wheel over an open list moves the highlight, which is what [`Selection::step`] does and
+    /// what a native select does. It changes nothing: a value is only taken on a click or an
+    /// `Enter`, so a wheel cannot commit anything by accident.
+    pub fn handle_mouse(&mut self, mouse: &MouseEvent, len: usize, screen: Rect) -> bool {
+        let at = Pos::new(mouse.column, mouse.row);
+        if self.open {
+            if let Some(delta) = mouse.kind.scroll() {
+                self.selection.step(delta, len);
+            } else if mouse.is_click() {
+                match self.option_at(at, len, screen) {
+                    Some(index) => {
+                        self.selection.set_selected(index);
+                        self.commit();
+                    }
+                    None => self.dismiss(),
+                }
+            }
+            return true;
+        }
+        if mouse.is_click() && self.field.get().contains(at) {
+            self.open();
+            return true;
+        }
+        false
+    }
+
     /// Apply the keys a dropdown owns, reporting whether the key was used.
     ///
     /// Closed, it opens on `Enter` or `Space` and otherwise takes nothing — so a screen can still
@@ -758,14 +929,30 @@ mod tests {
 
     #[test]
     fn a_window_never_leaves_blank_rows_below_content() {
-        let selection = Selection::at(0);
-        selection.scroll(18, 20);
-        // Scrolled near the end, then asked for ten rows: it must back up to show ten.
-        assert_eq!(selection.window(10, 20), 0..10, "should also follow the selection back up");
-
-        let selection = Selection::at(19);
-        selection.scroll(19, 20);
+        // At the end of the list in a three-row window, then asked for ten: it has to back up
+        // rather than show ten rows of which seven are past the end.
+        let mut selection = Selection::at(19);
+        selection.window(3, 20);
         assert_eq!(selection.window(10, 20), 10..20);
+        // And the offset left up there is abandoned as soon as the selection is above it.
+        selection.set_selected(0);
+        assert_eq!(selection.window(10, 20), 0..10);
+    }
+
+    #[test]
+    fn a_step_moves_the_selection_and_stops_at_both_ends() {
+        let mut selection = Selection::new();
+        selection.step(3, 10);
+        assert_eq!(selection.selected(), 3);
+        selection.step(-1, 10);
+        assert_eq!(selection.selected(), 2);
+        selection.step(-9, 10);
+        assert_eq!(selection.selected(), 0, "no wrapping, and no underflow");
+        selection.step(99, 10);
+        assert_eq!(selection.selected(), 9);
+        let mut empty = Selection::new();
+        empty.step(1, 0);
+        assert_eq!(empty.selected(), 0);
     }
 
     #[test]
@@ -1182,5 +1369,143 @@ mod tests {
         dropdown.set_field(Rect::new(0, 0, 8, 1));
         let area = dropdown.popup_area(0, Rect::sized(20, 10));
         assert!(!area.is_empty());
+    }
+
+    // ---- Hit-testing --------------------------------------------------------------------
+
+    /// A screen-sized frame the dropdown tests can resolve a popup against.
+    const SCREEN: Rect = Rect::new(0, 0, 40, 20);
+
+    fn click(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: conui_input::MouseKind::Down(conui_input::MouseButton::Left),
+            column,
+            row,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    fn wheel(down: bool) -> MouseEvent {
+        MouseEvent {
+            kind: if down {
+                conui_input::MouseKind::ScrollDown
+            } else {
+                conui_input::MouseKind::ScrollUp
+            },
+            column: 0,
+            row: 0,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn a_row_is_resolved_through_the_offset_the_list_last_drew_with() {
+        let selection = Selection::at(9);
+        let area = Rect::new(2, 3, 10, 4);
+        // Nothing has rendered yet, so the window has not slid: row 0 of the region is item 0.
+        assert_eq!(selection.row_at(area, Pos::new(4, 3), 12), Some(0));
+        // After a draw that had to scroll to show item 9, the same cell is a different item.
+        assert_eq!(selection.window(4, 12), 6..10);
+        assert_eq!(selection.row_at(area, Pos::new(4, 3), 12), Some(6));
+        assert_eq!(selection.row_at(area, Pos::new(4, 6), 12), Some(9));
+    }
+
+    #[test]
+    fn a_click_past_the_last_item_or_outside_the_list_selects_nothing() {
+        let selection = Selection::new();
+        let area = Rect::new(0, 0, 10, 6);
+        assert_eq!(selection.row_at(area, Pos::new(0, 2), 3), Some(2), "the last item");
+        assert_eq!(selection.row_at(area, Pos::new(0, 4), 3), None, "blank row below a short list");
+        assert_eq!(selection.row_at(area, Pos::new(0, 9), 10), None, "outside the region");
+        assert_eq!(selection.row_at(area, Pos::new(20, 0), 10), None, "right of the region");
+    }
+
+    #[test]
+    fn clicking_a_closed_field_opens_it_and_clicking_elsewhere_does_not() {
+        let mut dropdown = Dropdown::new();
+        dropdown.set_field(Rect::new(4, 2, 20, 1));
+        assert!(!dropdown.handle_mouse(&click(4, 5), 3, SCREEN));
+        assert!(!dropdown.is_open());
+        assert!(dropdown.handle_mouse(&click(6, 2), 3, SCREEN));
+        assert!(dropdown.is_open());
+    }
+
+    #[test]
+    fn a_wheel_over_a_closed_field_is_left_alone() {
+        // Deliberate: a form that changes a value while the user scrolls past it is a data-loss
+        // bug wearing a convenience costume.
+        let mut dropdown = Dropdown::new();
+        dropdown.set_field(Rect::new(0, 0, 20, 1));
+        assert!(!dropdown.handle_mouse(&wheel(true), 3, SCREEN));
+        assert_eq!(dropdown.selected(), 0);
+    }
+
+    #[test]
+    fn clicking_an_option_selects_it_and_closes_the_list() {
+        let mut dropdown = Dropdown::new();
+        dropdown.set_field(Rect::new(4, 2, 20, 1));
+        dropdown.open();
+        // The list is below the field, with a row of border: option 0 is at y = 4.
+        assert_eq!(dropdown.option_at(Pos::new(6, 4), 3, SCREEN), Some(0));
+        assert_eq!(dropdown.option_at(Pos::new(6, 6), 3, SCREEN), Some(2));
+        assert_eq!(dropdown.option_at(Pos::new(6, 3), 3, SCREEN), None, "the border is not a row");
+        assert!(dropdown.handle_mouse(&click(6, 6), 3, SCREEN));
+        assert!(!dropdown.is_open());
+        assert_eq!(dropdown.selected(), 2);
+    }
+
+    #[test]
+    fn clicking_outside_an_open_list_dismisses_it_and_the_click_goes_no_further() {
+        let mut dropdown = Dropdown::at(1);
+        dropdown.set_field(Rect::new(4, 2, 20, 1));
+        dropdown.open();
+        dropdown.set_selected(2);
+        // Consumed, so the control that happens to be under the pointer does not also act.
+        assert!(dropdown.handle_mouse(&click(30, 15), 3, SCREEN));
+        assert!(!dropdown.is_open());
+        assert_eq!(dropdown.selected(), 1, "dismissing restores, the same as Escape");
+    }
+
+    #[test]
+    fn a_wheel_over_an_open_list_moves_the_highlight_without_choosing_anything() {
+        let mut dropdown = Dropdown::new().rows(3);
+        dropdown.set_field(Rect::new(0, 0, 20, 1));
+        dropdown.open();
+        assert!(dropdown.handle_mouse(&wheel(true), 9, SCREEN));
+        assert_eq!(dropdown.selected(), 1);
+        assert!(dropdown.is_open(), "the wheel does not commit a value");
+        // And because it does not, the wheel is free: dismissing still restores what was there.
+        dropdown.dismiss();
+        assert_eq!(dropdown.selected(), 0);
+    }
+
+    #[test]
+    fn a_closed_dropdown_has_no_options_anywhere() {
+        let dropdown = Dropdown::new();
+        dropdown.set_field(Rect::new(0, 0, 20, 1));
+        assert_eq!(dropdown.option_at(Pos::new(2, 2), 3, SCREEN), None);
+    }
+
+    #[test]
+    fn hits_answer_with_the_last_region_recorded_over_a_cell() {
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        enum Id {
+            Form,
+            Overlay,
+        }
+        let hits = Hits::new();
+        hits.record(Id::Form, Rect::new(0, 0, 20, 10));
+        hits.record(Id::Overlay, Rect::new(4, 4, 6, 3));
+        // The overlay was drawn second, so it is what the eye sees and what the click hits.
+        assert_eq!(hits.at(Pos::new(5, 5)), Some(Id::Overlay));
+        assert_eq!(hits.at(Pos::new(1, 1)), Some(Id::Form));
+        assert_eq!(hits.at(Pos::new(30, 1)), None);
+        assert_eq!(hits.area_of(Id::Overlay), Some(Rect::new(4, 4, 6, 3)));
+        assert_eq!(hits.local(Id::Overlay, Pos::new(5, 5)), Some(Pos::new(1, 1)));
+        assert_eq!(hits.local(Id::Overlay, Pos::new(1, 1)), None);
+        assert_eq!(hits.len(), 2);
+        hits.clear();
+        assert!(hits.is_empty());
+        assert_eq!(hits.at(Pos::new(5, 5)), None, "a stale hit is worse than a missing one");
     }
 }

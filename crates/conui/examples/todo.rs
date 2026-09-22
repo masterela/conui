@@ -13,6 +13,12 @@
 //! knows its own height at render time; keys go to the editor because a `match` on the mode sends
 //! them there.
 //!
+//! The list is clickable, which is the interesting half: a row number under the pointer means
+//! nothing on its own, because the same cell is a different task depending on how far the list had
+//! scrolled when it was drawn. So the list records where it landed in a [`Hits`] map while
+//! composing, and the click is resolved against that — last frame's geometry is the only thing that
+//! can answer the question. Clicking a task's tick ticks it; clicking its text selects it.
+//!
 //! Tasks are read from and written to `~/.conui-todo.md` as a markdown checklist, so the file
 //! stays useful — and editable — outside this program. Override the location with
 //! `CONUI_TODO_FILE`.
@@ -31,7 +37,10 @@ use conui::view::{Column, Row, Spacer, View, ViewExt};
 use conui::widget::{
     Border, Field, Gauge, Hints, Input, List, ListRow, Panel, Readout, Rule, Stat, Text,
 };
-use conui::{App, BarStyle, Buffer, Config, Event, Frame, KeyCode, Padding, Role, Theme};
+use conui::{
+    App, BarStyle, Buffer, Config, Event, Frame, Hits, KeyCode, MouseEvent, Padding, Pos, Role,
+    Theme,
+};
 
 /// Below this there is no room for the sidebar and the list together.
 const MIN_WIDTH: u16 = 62;
@@ -70,7 +79,8 @@ fn run() -> io::Result<()> {
         // No animation on this screen, but a slow tick keeps the clock-free UI responsive to a
         // resize without burning a core on a 30fps redraw of a static list.
         .fps(20)
-        .min_size(MIN_WIDTH, MIN_HEIGHT);
+        .min_size(MIN_WIDTH, MIN_HEIGHT)
+        .mouse(true);
     let mut app = App::with(config)?;
 
     while app.is_running() {
@@ -103,28 +113,9 @@ fn dump(width: u16, height: u16) {
 // ---- The screen -------------------------------------------------------------------------
 
 fn compose(frame: &mut Frame<'_>, todo: &Todo) {
-    let visible = todo.visible();
+    // Last frame's geometry is gone; a stale hit would point at where a row used to be.
+    todo.hits.clear();
     let (done, total) = (todo.done_count(), todo.tasks.len());
-
-    let rows: Vec<ListRow> = visible
-        .iter()
-        .map(|&index| {
-            let task = &todo.tasks[index];
-            if task.done {
-                // The tick carries the state as well as the colour does: a dim row alone is not
-                // something a colourblind user or a monochrome terminal can read.
-                ListRow::new(task.text.clone()).mark("✓", Role::Accent).role(Role::Dim)
-            } else {
-                ListRow::new(task.text.clone()).mark("·", Role::Muted)
-            }
-        })
-        .collect();
-
-    let list = List::new(rows).selection(&todo.selection).highlight().empty(match todo.filter {
-        Filter::All => "nothing here yet — press A to add a task",
-        Filter::Open => "no open tasks. everything is done",
-        Filter::Done => "nothing finished yet",
-    });
 
     let heading = format!("{done} of {total} done");
     let screen = Column::new()
@@ -142,7 +133,7 @@ fn compose(frame: &mut Frame<'_>, todo: &Todo) {
                     Panel::new(format!("TASKS · {}", todo.filter.label()))
                         .border(Border::Line)
                         .padding(Padding::xy(1, 0))
-                        .child(list)
+                        .child(todo.task_list().hit(&todo.hits, Zone::List))
                         .flex(1),
                 )
                 .child(sidebar(todo).length(SIDEBAR))
@@ -288,6 +279,16 @@ enum Flow {
     Quit,
 }
 
+/// The parts of the screen a click can land in.
+///
+/// One variant, because there is one thing here worth clicking. A [`Hits`] map is still the right
+/// shape for it: the alternative is a bespoke `Cell<Rect>` per target, which is what this is
+/// underneath and what stops scaling at two. The settings example has eight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Zone {
+    List,
+}
+
 struct Todo {
     tasks: Vec<Task>,
     filter: Filter,
@@ -297,6 +298,8 @@ struct Todo {
     path: Option<PathBuf>,
     status: String,
     status_role: Role,
+    /// Where the list drew itself last frame, so a click can be turned into a row.
+    hits: Hits<Zone>,
 }
 
 impl Todo {
@@ -317,6 +320,7 @@ impl Todo {
             path,
             status,
             status_role,
+            hits: Hits::new(),
         }
     }
 
@@ -342,6 +346,7 @@ impl Todo {
             path: None,
             status: "6 loaded".to_string(),
             status_role: Role::Muted,
+            hits: Hits::new(),
         }
     }
 
@@ -364,6 +369,33 @@ impl Todo {
         self.tasks.iter().filter(|task| task.done).count()
     }
 
+    /// The task list, built once and used twice: composed into the panel, and asked by the click
+    /// handler where a row's text begins. Two constructions would drift the first time a mark
+    /// changed width, and the drift would show up as a click ticking a task the user meant to
+    /// select.
+    fn task_list(&self) -> List<'_> {
+        let rows: Vec<ListRow> = self
+            .visible()
+            .iter()
+            .map(|&index| {
+                let task = &self.tasks[index];
+                if task.done {
+                    // The tick carries the state as well as the colour does: a dim row alone is
+                    // not something a colourblind user or a monochrome terminal can read.
+                    ListRow::new(task.text.clone()).mark("✓", Role::Accent).role(Role::Dim)
+                } else {
+                    ListRow::new(task.text.clone()).mark("·", Role::Muted)
+                }
+            })
+            .collect();
+
+        List::new(rows).selection(&self.selection).highlight().empty(match self.filter {
+            Filter::All => "nothing here yet — press A to add a task",
+            Filter::Open => "no open tasks. everything is done",
+            Filter::Done => "nothing finished yet",
+        })
+    }
+
     fn file_label(&self) -> String {
         match &self.path {
             Some(path) => path
@@ -381,6 +413,10 @@ impl Todo {
                 Mode::Browse => return self.browse(key),
                 _ => self.edit(key),
             },
+            // Clicks and the wheel only mean something while browsing. Mid-edit the list is not
+            // what the user is talking to, and quietly moving the selection under an open field
+            // would commit the text to a different row than the one they were looking at.
+            Event::Mouse(mouse) if matches!(self.mode, Mode::Browse) => self.point(mouse),
             // A paste into the field is text; a paste while browsing would be a stream of
             // shortcuts firing at once, which is never what the user meant.
             Event::Paste(text) if !matches!(self.mode, Mode::Browse) => {
@@ -426,6 +462,42 @@ impl Todo {
             _ => {}
         }
         Flow::Continue
+    }
+
+    /// Point at the list: the wheel scrolls it, a click picks a row, and a click on a row's mark
+    /// ticks it.
+    ///
+    /// Everything here goes through the region the list recorded while drawing, because a row
+    /// number on its own is meaningless: the same cell is a different task depending on how far
+    /// the list had scrolled when the user was looking at it.
+    fn point(&mut self, mouse: &MouseEvent) {
+        let at = Pos::new(mouse.column, mouse.row);
+        let Some(area) = self.hits.area_of(Zone::List) else { return };
+        let length = self.visible().len();
+
+        if let Some(delta) = mouse.kind.scroll() {
+            // One row per notch, and only over the list. The cursor moves because the list's
+            // window follows it — see `Selection::step` — and moving the cursor is harmless here:
+            // nothing is written until SPACE or a click on a tick.
+            if area.contains(at) {
+                self.selection.step(delta, length);
+            }
+            return;
+        }
+        if !mouse.is_click() {
+            return;
+        }
+        let Some(row) = self.selection.row_at(area, at, length) else { return };
+        // Asked before the selection moves, because `text_column` depends on the marks the list
+        // was drawn with, and one of those is about to change.
+        let on_mark = self
+            .hits
+            .local(Zone::List, at)
+            .is_some_and(|local| local.x < self.task_list().text_column());
+        self.selection.set_selected(row);
+        if on_mark {
+            self.toggle();
+        }
     }
 
     fn edit(&mut self, key: &conui::KeyEvent) {
@@ -581,7 +653,7 @@ fn write_tasks(path: &Path, tasks: &[Task]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use conui::KeyEvent;
+    use conui::{KeyEvent, Modifiers, MouseButton, MouseKind, Rect};
 
     /// A sample app with no path, so nothing here can touch the filesystem.
     fn app() -> Todo {
@@ -762,6 +834,125 @@ mod tests {
         let rendered = screen(&todo, 84, 22);
         assert!(rendered.contains("0%"), "got {rendered}");
         assert!(!rendered.contains("100%"));
+    }
+
+    // ---- Mouse ---------------------------------------------------------------------------
+
+    /// Draw at this size, then click. Both halves matter: a click is resolved against last frame's
+    /// geometry, so a test that skipped the draw would be clicking at a screen that never existed.
+    fn click_at(todo: &mut Todo, column: u16, row: u16, height: u16) {
+        let _ = screen(todo, 84, height);
+        todo.handle(&Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: Modifiers::NONE,
+        }));
+    }
+
+    /// Where the list drew itself, after one frame at this size.
+    fn list_area(todo: &Todo, height: u16) -> Rect {
+        let _ = screen(todo, 84, height);
+        todo.hits.area_of(Zone::List).expect("the list draws every frame")
+    }
+
+    fn wheel(todo: &mut Todo, column: u16, row: u16, down: bool) {
+        todo.handle(&Event::Mouse(MouseEvent {
+            kind: if down { MouseKind::ScrollDown } else { MouseKind::ScrollUp },
+            column,
+            row,
+            modifiers: Modifiers::NONE,
+        }));
+    }
+
+    #[test]
+    fn clicking_a_task_selects_it() {
+        let mut todo = app();
+        let area = list_area(&todo, 22);
+        let text = todo.task_list().text_column();
+        click_at(&mut todo, area.x + text + 1, area.y + 3, 22);
+        assert_eq!(todo.selection.selected(), 3);
+        assert_eq!(todo.selected(), Some(3));
+        assert!(!todo.tasks[3].done, "selecting is not toggling");
+    }
+
+    #[test]
+    fn clicking_a_tasks_tick_toggles_it() {
+        let mut todo = app();
+        let area = list_area(&todo, 22);
+        assert!(!todo.tasks[4].done);
+        // Left of the text is the status column, and clicking a tick is how you tick it.
+        click_at(&mut todo, area.x, area.y + 4, 22);
+        assert!(todo.tasks[4].done);
+        assert_eq!(todo.selection.selected(), 4, "and the cursor followed the click");
+    }
+
+    #[test]
+    fn clicking_past_the_last_task_changes_nothing() {
+        let mut todo = app();
+        let area = list_area(&todo, 22);
+        todo.selection.set_selected(1);
+        // Six tasks, so row six is the blank space under them.
+        click_at(&mut todo, area.x + 6, area.y + 6, 22);
+        assert_eq!(todo.selection.selected(), 1, "the blank space belongs to nobody");
+    }
+
+    #[test]
+    fn the_wheel_moves_the_cursor_and_the_window_follows_it() {
+        let mut todo = app();
+        let area = list_area(&todo, 12);
+        assert_eq!(area.height, 4, "the fixture assumes a four-row window over six tasks");
+        for _ in 0..5 {
+            wheel(&mut todo, area.x + 4, area.y + 1, true);
+        }
+        assert_eq!(todo.selection.selected(), 5, "five notches, five rows, then the end");
+        let rendered = screen(&todo, 84, 12);
+        assert!(rendered.contains("publish 0.1 to crates.io"), "the window slid: {rendered}");
+        assert!(!rendered.contains("wire the focus layer"), "got {rendered}");
+        wheel(&mut todo, area.x + 4, area.y + 1, false);
+        assert_eq!(todo.selection.selected(), 4);
+    }
+
+    #[test]
+    fn the_wheel_away_from_the_list_is_not_the_lists_business() {
+        let mut todo = app();
+        let _ = screen(&todo, 84, 22);
+        wheel(&mut todo, 70, 5, true); // over the sidebar
+        assert_eq!(todo.selection.selected(), 0);
+    }
+
+    #[test]
+    fn a_click_after_scrolling_lands_on_the_row_it_looks_like() {
+        let mut todo = app();
+        // Four visible rows for six tasks. Put the cursor at the end so the window has slid by two,
+        // then click the top row: it is task two now, not task zero.
+        todo.selection.last(todo.visible().len());
+        let area = list_area(&todo, 12);
+        assert_eq!(area.height, 4, "the fixture assumes a four-row window");
+        click_at(&mut todo, area.x + 6, area.y, 12);
+        assert_eq!(todo.selection.selected(), 2);
+        assert_eq!(todo.tasks[todo.selected().unwrap()].text, "ship List and Input");
+    }
+
+    #[test]
+    fn a_click_outside_the_list_is_ignored() {
+        let mut todo = app();
+        todo.selection.set_selected(2);
+        // The sidebar, which has nothing clickable on it.
+        click_at(&mut todo, 70, 5, 22);
+        assert_eq!(todo.selection.selected(), 2);
+    }
+
+    #[test]
+    fn the_mouse_is_left_alone_while_typing() {
+        let mut todo = app();
+        let area = list_area(&todo, 22);
+        press(&mut todo, KeyCode::Char('a'));
+        type_text(&mut todo, "half typed");
+        click_at(&mut todo, area.x, area.y + 4, 22);
+        assert_eq!(todo.selection.selected(), 0, "the list is not what the user is talking to");
+        assert!(!todo.tasks[4].done);
+        assert_eq!(todo.editor.value(), "half typed", "and the field kept what was in it");
     }
 
     // ---- The file format ----------------------------------------------------------------

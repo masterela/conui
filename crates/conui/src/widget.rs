@@ -935,6 +935,17 @@ impl<'a> List<'a> {
             .max()
             .unwrap_or(0)
     }
+
+    /// The column a row's text starts at, past the cursor column and the mark.
+    ///
+    /// For resolving a click across a row: everything left of this is the mark, and a click on a
+    /// task's tick usually means "tick it" rather than "select it". Depends on the rows, so ask the
+    /// list you actually drew.
+    pub fn text_column(&self) -> u16 {
+        let marker = if self.selection.is_some() { text_width(&self.marker) } else { 0 };
+        let mark = self.mark_width();
+        marker + mark + u16::from(mark > 0)
+    }
 }
 
 impl View for List<'_> {
@@ -952,7 +963,7 @@ impl View for List<'_> {
 
         let marker_width = if self.selection.is_some() { text_width(&self.marker) } else { 0 };
         let mark_width = self.mark_width();
-        let text_x = marker_width + mark_width + u16::from(mark_width > 0);
+        let text_x = self.text_column();
         let selected = self.selection.map(Selection::selected);
         let window = match self.selection {
             Some(selection) => selection.window(height, self.rows.len()),
@@ -1288,6 +1299,23 @@ impl<'a> Tabs<'a> {
         let labels: u16 = self.labels.iter().map(|label| text_width(label)).sum();
         let gaps = self.gap.saturating_mul(self.labels.len().saturating_sub(1) as u16);
         labels.saturating_add(gaps)
+    }
+
+    /// Which tab is at column `x`, measured from the bar's own left edge.
+    ///
+    /// The gap between two labels belongs to neither, so a click that lands in it selects nothing
+    /// rather than guessing. Build the bar the same way you render it — one helper both call sites
+    /// use — or this and the pixels will disagree the first time a gap changes.
+    pub fn index_at(&self, x: u16) -> Option<usize> {
+        let mut start = 0u16;
+        for (index, label) in self.labels.iter().enumerate() {
+            let end = start.saturating_add(text_width(label));
+            if x < end {
+                return (x >= start).then_some(index);
+            }
+            start = end.saturating_add(self.gap);
+        }
+        None
     }
 }
 
@@ -2010,6 +2038,19 @@ mod tests {
         let tabs = Tabs::new(["ONE", "TWO"]).gap(3);
         assert_eq!(tabs.width(), 9);
         assert_eq!(Tabs::new(["ONE"]).gap(3).width(), 3, "one tab has no gap after it");
+    }
+
+    #[test]
+    fn a_click_resolves_to_the_label_under_it_and_a_gap_resolves_to_nothing() {
+        // ONE at 0..3, three columns of gap, TWO at 6..9.
+        let tabs = Tabs::new(["ONE", "TWO"]).gap(3);
+        assert_eq!(tabs.index_at(0), Some(0));
+        assert_eq!(tabs.index_at(2), Some(0));
+        assert_eq!(tabs.index_at(3), None, "the gap belongs to neither label");
+        assert_eq!(tabs.index_at(5), None);
+        assert_eq!(tabs.index_at(6), Some(1));
+        assert_eq!(tabs.index_at(8), Some(1));
+        assert_eq!(tabs.index_at(9), None, "past the end of the bar");
     }
 
     #[test]

@@ -180,6 +180,26 @@ pub enum MouseKind {
     ScrollRight,
 }
 
+impl MouseKind {
+    /// The button this concerns, for a press, release or drag.
+    pub const fn button(self) -> Option<MouseButton> {
+        match self {
+            Self::Down(button) | Self::Up(button) | Self::Drag(button) => Some(button),
+            _ => None,
+        }
+    }
+
+    /// Vertical wheel movement in rows: negative up, positive down, `None` if this is not a
+    /// vertical scroll. One notch is one event; the terminal reports no magnitude.
+    pub const fn scroll(self) -> Option<i32> {
+        match self {
+            Self::ScrollUp => Some(-1),
+            Self::ScrollDown => Some(1),
+            _ => None,
+        }
+    }
+}
+
 /// A mouse event at a cell position. Coordinates are zero-based, matching [`conui_cell::Rect`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MouseEvent {
@@ -187,6 +207,17 @@ pub struct MouseEvent {
     pub column: u16,
     pub row: u16,
     pub modifiers: Modifiers,
+}
+
+impl MouseEvent {
+    /// A left-button press: "the user clicked here".
+    ///
+    /// Press rather than release, which is what makes a click feel immediate. The difference only
+    /// shows on a drag out of a control before releasing — a distinction worth having in a form
+    /// with a Delete button, and available by matching [`MouseKind`] directly when you want it.
+    pub const fn is_click(&self) -> bool {
+        matches!(self.kind, MouseKind::Down(MouseButton::Left))
+    }
 }
 
 /// Anything the terminal can tell us.
@@ -220,6 +251,14 @@ impl Event {
     pub fn as_key(&self) -> Option<&KeyEvent> {
         match self {
             Self::Key(key) => Some(key),
+            _ => None,
+        }
+    }
+
+    /// The mouse event, if this is one.
+    pub fn as_mouse(&self) -> Option<&MouseEvent> {
+        match self {
+            Self::Mouse(mouse) => Some(mouse),
             _ => None,
         }
     }
@@ -267,6 +306,30 @@ mod tests {
         let with_ctrl = KeyEvent::new(KeyCode::Char('q'), Modifiers::CTRL);
         assert!(!with_ctrl.is_key('q'));
         assert!(with_ctrl.is_ctrl('q'));
+    }
+
+    #[test]
+    fn a_click_is_a_left_press_and_nothing_else() {
+        let click = MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            column: 4,
+            row: 2,
+            modifiers: Modifiers::NONE,
+        };
+        assert!(click.is_click());
+        assert!(!MouseEvent { kind: MouseKind::Up(MouseButton::Left), ..click }.is_click());
+        assert!(!MouseEvent { kind: MouseKind::Down(MouseButton::Right), ..click }.is_click());
+        assert_eq!(Event::Mouse(click).as_mouse(), Some(&click));
+        assert_eq!(Event::FocusGained.as_mouse(), None);
+    }
+
+    #[test]
+    fn scroll_reports_a_direction_only_for_the_vertical_wheel() {
+        assert_eq!(MouseKind::ScrollUp.scroll(), Some(-1));
+        assert_eq!(MouseKind::ScrollDown.scroll(), Some(1));
+        assert_eq!(MouseKind::ScrollLeft.scroll(), None);
+        assert_eq!(MouseKind::Down(MouseButton::Left).button(), Some(MouseButton::Left));
+        assert_eq!(MouseKind::Moved.button(), None);
     }
 
     #[test]

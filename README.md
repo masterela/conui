@@ -74,12 +74,15 @@ of views over a list you can scroll, filter and edit:
 cargo run -p conui --example todo
 ```
 
-Tasks persist as a markdown checklist in `$CONUI_TODO_FILE`, or `~/.conui-todo.md`. It is a real
-program in under 600 lines, and its own `#[cfg(test)]` module drives the actual key handler and
-asserts on rendered rows — 18 tests, no terminal involved.
+Tasks persist as a markdown checklist in `$CONUI_TODO_FILE`, or `~/.conui-todo.md`. Rows are
+clickable, and clicking a task's tick ticks it — resolved against where the list drew itself last
+frame, which is the only thing that knows how far it had scrolled. It is a real program in under 700
+lines, and its own `#[cfg(test)]` module drives the actual key and mouse handlers and asserts on
+rendered rows — 26 tests, no terminal involved.
 
 The third demo is the one with controls: a focus ring walked with `Tab`, tabs, buttons, a text
-field, and dropdowns whose lists are drawn over everything else.
+field, and dropdowns whose lists are drawn over everything else — all of it reachable with the mouse
+as well.
 
 ```
   CONUI  /  SETTINGS                                                      MODIFIED
@@ -107,8 +110,10 @@ cargo run -p conui --example settings
 ```
 
 Applying a theme re-themes the live app; the `PREVIEW` panel shows the *draft* palette before you
-commit to it, which a `Role` cannot express and a `Paint` closure can. `--dump` takes `--open` and
-`--tab N` so any state of it can be printed as text; 17 of its tests do exactly that.
+commit to it, which a `Role` cannot express and a `Paint` closure can. The whole screen works with
+the mouse too: click a tab, a field or a button, click a select to open it, click an option to choose
+it, click anywhere else to dismiss it. `--dump` takes `--open` and `--tab N` so any state of it can
+be printed as text, which is how most of its tests assert on the layout.
 
 ## Quick start
 
@@ -191,7 +196,8 @@ fn place(canvas: &mut Canvas<'_>, x: u16, y: u16, w: u16, h: u16, view: &dyn Vie
 |---|---|
 | Layout | `Constraint::{Length, Percentage, Ratio, Min, Max, Fill}`, `Row`, `Column`, `Spacer`, `Padded`, `centered` |
 | Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Input`, `Button`, `Tabs`, `Select`, `Menu` |
-| State | `Selection` (cursor + its own scroll offset), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed) |
+| State | `Selection` (cursor + its own scroll offset), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed), `Hits<T>` (where each control landed) |
+| Combinators | `.flex`, `.length`, `.percent`, `.ratio`, `.at_least`, `.at_most`, `.padded`, `.hit` |
 | Escapes | `Paint(closure)`, `When`, and the raw `Canvas` |
 | Themes | `Theme::LAYA` (default), `Theme::EMBER`, `Theme::INHERIT`; nine semantic `Role`s |
 
@@ -354,9 +360,67 @@ show through is not one. The absolute rect comes from `Canvas::screen_area()`, t
 canvas API that speaks buffer coordinates, because the only two things that need them are overlays
 and hit-testing.
 
-There is still no hit-testing: nothing routes a click to a widget, so every screen here is
-keyboard-driven. Nor is there a general scroll viewport — a `List` scrolls itself, but an arbitrary
-subtree taller than its region is clipped, not scrolled.
+### A click is resolved against last frame
+
+Focus is *declared* — you write the ring — so `Focus` never has to learn anything at render time. A
+click is the opposite: it has to be resolved against pixels that were actually on screen, and the
+only thing that knows where those were is the frame that drew them. So there is a second structure,
+and it does record during render:
+
+```rust
+use conui::view::{Column, ViewExt};
+use conui::widget::Button;
+use conui::{Frame, Hits, MouseEvent, Pos};
+
+#[derive(Clone, Copy, PartialEq)]
+enum Id { Save, Cancel }
+
+struct Ui { hits: Hits<Id> }
+
+impl Ui {
+    fn compose(&self, frame: &mut Frame<'_>) {
+        // Last frame's geometry is gone the moment this one starts. A stale hit points at where a
+        // control used to be, which is the bug that makes a UI feel haunted.
+        self.hits.clear();
+        let screen = Column::new()
+            .child(Button::new("Save").hit(&self.hits, Id::Save).length(1))
+            .child(Button::new("Cancel").hit(&self.hits, Id::Cancel).length(1));
+        frame.render_full(&screen);
+    }
+
+    fn clicked(&mut self, mouse: &MouseEvent) {
+        match self.hits.at(Pos::new(mouse.column, mouse.row)) {
+            Some(Id::Save) => { /* … */ }
+            Some(Id::Cancel) => { /* … */ }
+            // Not every cell belongs to something, and chrome is not a target.
+            None => {}
+        }
+    }
+}
+```
+
+`.hit(&hits, id)` is a decorator, so the widget learns nothing: `Button` has no `on_click` and no id
+field, and a hit-tested view provably asks for and draws exactly what the undecorated one does.
+`Hits::at` searches the last region recorded first, so an overlay drawn in the second pass wins over
+whatever it covers.
+
+Resolving *within* a control is the widget's own business, and each one that needs it exposes the
+one measurement only it can make: `Tabs::index_at` (a click in the gap between two labels belongs to
+neither), `Selection::row_at` (which reads the offset the last window recorded, because a row number
+means nothing without knowing how far the list had scrolled), `List::text_column` (left of it is the
+tick, and clicking a task's tick is how you tick it), and `Dropdown::handle_mouse`, which takes
+*every* event while it is open for the same reason its keyboard handler does — a click outside
+dismisses the list rather than falling through to what is under it.
+
+One rule makes the difference between this working and almost working: build the thing once and use
+it twice. Both examples extract the control into a method — `Ui::tab_bar()`, `Todo::task_list()` —
+that compose and the click handler both call, because two constructions drift, and the drift shows
+up as clicks landing on the wrong thing.
+
+There is still no general scroll viewport: a `List` scrolls itself, but an arbitrary subtree taller
+than its region is clipped, not scrolled. That is also why the wheel over a list moves the cursor
+rather than a window of its own — `Selection::window` always contains the selection, so an offset
+nudged on its own would be pulled straight back by the next draw.
 
 ## The crates
 
@@ -383,6 +447,9 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
   and what there is, instead of scrambling.
 - `Ctrl+C` quits by default, because in raw mode the kernel no longer turns it into a signal and
   an app that ignores the key cannot be interrupted at all.
+- Mouse reporting is opt-in (`Config::mouse(true)`) and is turned off on the way out along with
+  bracketed paste and the alternate screen — a terminal left reporting clicks after the program
+  exits spits escape sequences into the user's shell.
 
 ## Platform support
 
@@ -395,16 +462,16 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace                  # 355 unit tests + 15 doctests
-cargo test -p conui --example todo      # 18 more: the example tests itself
-cargo test -p conui --example settings  # 17 more
+cargo test --workspace                  # 370 unit tests + 17 doctests
+cargo test -p conui --example todo      # 26 more: the example tests itself
+cargo test -p conui --example settings  # 24 more
 cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
 cargo fmt --all                         # rustfmt.toml pins use_small_heuristics = "Max"
 ```
 
-Test counts by crate: `conui` 220, `conui-cell` 55, `conui-input` 50, `conui-term` 30.
+Test counts by crate: `conui` 233, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what
