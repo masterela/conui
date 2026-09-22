@@ -729,6 +729,15 @@ impl Monitor {
                 self.mouse(mouse);
                 Flow::Continue
             }
+            // A pasted process name is the likeliest way anyone fills this field, and without this
+            // arm the text would arrive as nothing at all: bracketed paste means a paste is one
+            // event rather than a burst of keys, so a handler that only reads keys never sees it.
+            Event::Paste(text) if self.mode == Mode::Filtering => {
+                self.filter.insert_str(text);
+                self.needle = self.filter.value().to_string();
+                self.follow();
+                Flow::Continue
+            }
             _ => Flow::Continue,
         }
     }
@@ -1787,6 +1796,23 @@ mod tests {
         let mut monitor = app();
         press(&mut monitor, KeyCode::Char('/'));
         assert!(screen(&monitor, 100, 24).contains("ENTER to keep"), "no placeholder");
+    }
+
+    #[test]
+    fn a_process_name_can_be_pasted_into_the_filter() {
+        let mut monitor = app();
+        press(&mut monitor, KeyCode::Char('/'));
+        monitor.handle(&Event::Paste("WindowServer".to_string()));
+        assert_eq!(monitor.needle, "WindowServer");
+        assert_eq!(names(&monitor), vec!["WindowServer"], "the list narrowed on the paste alone");
+    }
+
+    #[test]
+    fn a_paste_while_browsing_is_not_a_filter() {
+        let mut monitor = app();
+        monitor.handle(&Event::Paste("rustc".to_string()));
+        assert!(monitor.needle.is_empty(), "text arrived in a field nobody had opened");
+        assert_eq!(names(&monitor).len(), 8);
     }
 
     #[test]
