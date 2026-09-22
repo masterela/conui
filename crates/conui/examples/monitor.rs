@@ -40,6 +40,7 @@
 
 use std::collections::HashMap;
 use std::io;
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use conui::state::{Editor, Selection};
@@ -79,7 +80,20 @@ const MEM_WIDTH: usize = 9;
 /// What a figure the platform would not give prints as.
 const UNKNOWN: &str = "—";
 
-fn main() -> io::Result<()> {
+/// Returning `io::Result` from `main` would be shorter, and would print the error with `Debug`:
+/// `Error: Custom { kind: Unsupported, error: "conui needs .." }`. The sentence inside it is the
+/// part the user needs, so it gets printed on its own.
+fn main() -> ExitCode {
+    match dispatch() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("monitor: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn dispatch() -> io::Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
         Some("--help" | "-h") => {

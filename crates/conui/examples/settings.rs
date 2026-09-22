@@ -42,6 +42,7 @@
 
 use std::cell::Cell;
 use std::io;
+use std::process::ExitCode;
 
 use conui::view::{Column, Paint, Row, Scroll, Spacer, ViewExt};
 use conui::widget::{
@@ -204,7 +205,19 @@ const BARS: [&str; 4] = ["Rule", "Shaded", "Blocks", "Smooth"];
 const DENSITY: [&str; 3] = ["Compact", "Comfortable", "Spacious"];
 const SIDEBAR: [&str; 3] = ["Left", "Right", "Hidden"];
 
-fn main() -> io::Result<()> {
+/// Returning `io::Result` from `main` would print the error with `Debug`, wrapping the sentence the
+/// user needs in `Error: Custom { .. }`. This prints the sentence.
+fn main() -> ExitCode {
+    match dispatch() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("settings: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn dispatch() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--help" | "-h") => {

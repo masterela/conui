@@ -76,6 +76,25 @@ fn emergency_restore() {
     }
 }
 
+/// What a caller gets for taking over a terminal that is not there.
+///
+/// Letting the platform speak for itself here is the wrong call, and it took piping an example to
+/// notice: asking `/dev/null` about its terminal settings fails with `ENODEV`, which reaches the
+/// user as `Error: Os { code: 19, kind: Uncategorized, message: "Operation not supported by
+/// device" }` and sends them looking for a bug in their own code. There is no bug. They redirected
+/// stdin — a pipe, a CI log, an editor's output pane, `< /dev/null` — and a full-screen program
+/// cannot run without a keyboard attached to a screen.
+///
+/// So the message names the requirement rather than the failed syscall, and the kind is
+/// `Unsupported` rather than `Other`, which is the difference between a caller being able to match
+/// on this and having to match on a string.
+fn not_a_terminal() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        "conui needs an interactive terminal, and stdin is not one (is it redirected?)",
+    )
+}
+
 /// Chain a terminal restore ahead of the existing panic hook, once per process.
 fn install_panic_hook() {
     PANIC_HOOK.get_or_init(|| {
@@ -138,15 +157,30 @@ impl Terminal {
         &mut self.painter
     }
 
-    /// Whether stdin is a terminal. An app should refuse interactive mode when this is false.
+    /// Whether stdin is a terminal.
+    ///
+    /// [`Terminal::enter`] refuses when this is false, so an app does not have to check to stay
+    /// correct. Worth checking anyway when there is something better to do than fail: a program
+    /// with a plain-text mode can fall back to it, which is friendlier than an error the user can
+    /// only fix by rerunning.
+    ///
+    /// This asks about *input*, because raw mode is a property of the input stream. Output being a
+    /// pipe is a separate and much less fatal thing — it only costs colour, and
+    /// [`Capabilities::plain`] takes even that back.
     pub fn is_interactive() -> bool {
         platform::is_input_tty()
     }
 
     /// Take over the terminal: raw mode, alternate screen, and a panic-safe restore.
+    ///
+    /// Fails with [`io::ErrorKind::Unsupported`] when there is no terminal to take over — see
+    /// [`Terminal::is_interactive`], which answers the same question without the error.
     pub fn enter(&mut self) -> io::Result<()> {
         if self.entered {
             return Ok(());
+        }
+        if !Self::is_interactive() {
+            return Err(not_a_terminal());
         }
         install_panic_hook();
         let saved = platform::enter_raw_mode()?;
@@ -274,6 +308,27 @@ mod tests {
         // non-interactive rendering paths work in CI.
         let terminal = Terminal::with_capabilities(Capabilities::plain(ColorDepth::TrueColor));
         assert!(terminal.is_ok());
+    }
+
+    #[test]
+    fn refusing_a_non_terminal_names_the_requirement_not_the_failed_syscall() {
+        let error = not_a_terminal();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        let message = error.to_string();
+        assert!(message.contains("terminal"), "{message}");
+        assert!(message.contains("stdin"), "{message}");
+        // The whole point is that this is *not* the platform's own error, which arrives as a
+        // debug-printed `Os { code: .. }` and names a device rather than a requirement.
+        assert!(!message.contains("code:"), "{message}");
+    }
+
+    #[test]
+    fn asking_whether_there_is_a_terminal_does_not_take_one_over() {
+        // Deliberately not asserting *which* answer: a developer running `cargo test` in a
+        // terminal has a tty on stdin and CI does not, and both are correct. What has to hold is
+        // that asking is free — no raw mode, no panic hook, and the same answer twice.
+        let first = Terminal::is_interactive();
+        assert_eq!(first, Terminal::is_interactive());
     }
 
     #[test]

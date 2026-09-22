@@ -31,6 +31,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use conui::state::{Editor, Selection};
 use conui::view::{Column, Row, Spacer, View, ViewExt};
@@ -50,7 +51,19 @@ const SIDEBAR: u16 = 24;
 /// Columns the full key legend needs. Below this the footer shows the short one instead.
 const FULL_LEGEND: u16 = 71;
 
-fn main() -> io::Result<()> {
+/// Returning `io::Result` from `main` would print the error with `Debug`, wrapping the sentence the
+/// user needs in `Error: Custom { .. }`. This prints the sentence.
+fn main() -> ExitCode {
+    match dispatch() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("todo: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn dispatch() -> io::Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
         Some("--help" | "-h") => {

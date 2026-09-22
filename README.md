@@ -612,10 +612,20 @@ decoding, and giving the terminal back. [`docs/terminal-handshake.md`](docs/term
 the checklist for the part a person has to sit down and do — eight items, about ten minutes per
 machine, with a report template at the end. It is what the two rows above are waiting on.
 
+There is one thing a CI box is better at than a developer's machine, though, and it is the inverse of
+all that: it has no terminal. So the suite ends by running every example with stdin redirected and
+checking each one declines in a sentence — `conui needs an interactive terminal, and stdin is not one`
+— rather than failing at `tcgetattr` and reporting `Os { code: 19, kind: Uncategorized }`, which is
+what it did until a redirect was tried on purpose. `Terminal::enter` refuses when
+`Terminal::is_interactive` is false, so an app gets that for free; check it yourself only when there
+is something better to do than exit, such as a plain-text mode to fall back to. A unit test cannot
+cover this, because a test calling `enter` on a developer's machine would find a real tty and take it
+over mid-suite.
+
 ## Development
 
 ```sh
-cargo test --workspace                  # 433 unit tests + 19 doctests
+cargo test --workspace                  # 435 unit tests + 19 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 27 more
 cargo test -p conui --example settings  # 55 more

@@ -74,6 +74,35 @@ jobs:
           cargo run -q -p conui --example settings -- --dump 88 24 --tab 2
           cargo run -q -p conui --example monitor -- --dump 100 24
 
+      # The one thing a CI box is better at than a developer's machine: it has no terminal. Every
+      # example must decline rather than fail at `tcgetattr`, and must say so in a sentence — the
+      # unit tests can only check the error value, because a test calling `Terminal::enter` on a
+      # developer's machine would find a real tty and take it over mid-suite.
+      - name: Refuse a redirected stdin
+        shell: bash
+        run: |
+          for example in snake todo settings monitor; do
+            path=target/debug/examples/$example
+            [ -f "$path.exe" ] && path=$path.exe
+            if "$path" < /dev/null > out.txt 2> err.txt; then
+              echo "$example: ran to completion with no terminal, which it cannot have done"
+              exit 1
+            fi
+            if ! grep -q 'needs an interactive terminal' err.txt; then
+              echo "$example: failed, but not with the message a user can act on:"
+              cat err.txt
+              exit 1
+            fi
+            # `Debug`-printed io::Error is the failure this step exists to catch.
+            if grep -q 'kind: Unsupported' err.txt; then
+              echo "$example: printed the error struct rather than its message:"
+              cat err.txt
+              exit 1
+            fi
+            echo "$example: $(cat err.txt)"
+          done
+          rm -f out.txt err.txt
+
   fmt:
     name: fmt
     runs-on: ubuntu-latest
