@@ -35,12 +35,15 @@ pub trait View {
     /// corrupt its siblings even if its arithmetic is wrong.
     fn render(&self, canvas: &mut Canvas<'_>);
 
-    /// How much of the parent's axis this view wants.
+    /// How much of `axis` this view wants, `axis` being the one its parent is dividing.
     ///
-    /// The default asks for an equal share of whatever is spare. Views with an intrinsic size —
-    /// a one-line label, a three-row block number — override this so that stacking them does
-    /// the obvious thing without the caller restating it. [`ViewExt`] overrides it per use.
-    fn constraint(&self) -> Constraint {
+    /// Asked per axis because a view's two intrinsic sizes are different questions: a label is one
+    /// row tall and as wide as its text, and answering with one number means being wrong in a
+    /// `Row` or wrong in a `Column`. A view with no intrinsic size along an axis says
+    /// `Fill(1)` — an equal share of whatever is spare — which is also the default for both.
+    /// [`ViewExt`] overrides the answer per use, for whichever axis the parent asks about.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        let _ = axis;
         Constraint::Fill(1)
     }
 }
@@ -49,8 +52,8 @@ impl<V: View + ?Sized> View for &V {
     fn render(&self, canvas: &mut Canvas<'_>) {
         (**self).render(canvas);
     }
-    fn constraint(&self) -> Constraint {
-        (**self).constraint()
+    fn constraint(&self, axis: Direction) -> Constraint {
+        (**self).constraint(axis)
     }
 }
 
@@ -58,8 +61,8 @@ impl<V: View + ?Sized> View for Box<V> {
     fn render(&self, canvas: &mut Canvas<'_>) {
         (**self).render(canvas);
     }
-    fn constraint(&self) -> Constraint {
-        (**self).constraint()
+    fn constraint(&self, axis: Direction) -> Constraint {
+        (**self).constraint(axis)
     }
 }
 
@@ -131,8 +134,8 @@ impl<T: Copy, V: View> View for Hit<'_, T, V> {
         self.hits.record(self.id, canvas.screen_area());
         self.view.render(canvas);
     }
-    fn constraint(&self) -> Constraint {
-        self.view.constraint()
+    fn constraint(&self, axis: Direction) -> Constraint {
+        self.view.constraint(axis)
     }
 }
 
@@ -146,7 +149,11 @@ impl<V: View> View for Constrained<V> {
     fn render(&self, canvas: &mut Canvas<'_>) {
         self.view.render(canvas);
     }
-    fn constraint(&self) -> Constraint {
+
+    /// The same answer whichever axis is asked about: `.length(6)` in a `Row` means six columns and
+    /// in a `Column` means six rows. A constraint written at the point of use is about the slot the
+    /// parent is filling, so it speaks for whichever axis that parent divides.
+    fn constraint(&self, _axis: Direction) -> Constraint {
         self.constraint
     }
 }
@@ -162,8 +169,8 @@ impl<V: View> View for Padded<V> {
         let mut inner = canvas.inset(self.padding);
         self.view.render(&mut inner);
     }
-    fn constraint(&self) -> Constraint {
-        self.view.constraint()
+    fn constraint(&self, axis: Direction) -> Constraint {
+        self.view.constraint(axis)
     }
 }
 
@@ -237,6 +244,14 @@ impl<'a> Stack<'a> {
             Direction::Horizontal => self.padding.left.saturating_add(self.padding.right),
         }
     }
+
+    /// The padding across it, which adds to the size a parent stacking the other way sees.
+    fn cross_padding(&self) -> u16 {
+        match self.direction {
+            Direction::Vertical => self.padding.left.saturating_add(self.padding.right),
+            Direction::Horizontal => self.padding.top.saturating_add(self.padding.bottom),
+        }
+    }
 }
 
 impl View for Stack<'_> {
@@ -245,7 +260,7 @@ impl View for Stack<'_> {
             return;
         }
         let constraints: Vec<Constraint> =
-            self.children.iter().map(|child| child.constraint()).collect();
+            self.children.iter().map(|child| child.constraint(self.direction)).collect();
         let layout = Layout::new(self.direction, constraints).gap(self.gap).margin(self.padding);
         for (child, area) in self.children.iter().zip(layout.split(canvas.area())) {
             // An empty region still gets rendered into: the canvas clips it away, and skipping
@@ -255,17 +270,26 @@ impl View for Stack<'_> {
         }
     }
 
-    fn constraint(&self) -> Constraint {
+    /// Along its own axis a fitted stack adds its children up; across it, they overlap, so the
+    /// widest child is the answer. Either way one unmeasurable child makes the whole stack
+    /// unmeasurable: a share of the parent is not a size.
+    fn constraint(&self, axis: Direction) -> Constraint {
         if !self.fit {
             return Constraint::Fill(1);
         }
         let mut total: u16 = 0;
         for child in &self.children {
-            match child.constraint() {
-                Constraint::Length(cells) => total = total.saturating_add(cells),
+            match child.constraint(axis) {
+                Constraint::Length(cells) if axis == self.direction => {
+                    total = total.saturating_add(cells);
+                }
+                Constraint::Length(cells) => total = total.max(cells),
                 // A child whose size is a share of the parent cannot be added up here.
                 _ => return Constraint::Fill(1),
             }
+        }
+        if axis != self.direction {
+            return Constraint::Length(total.saturating_add(self.cross_padding()));
         }
         let gaps = self.children.len().saturating_sub(1) as u16 * self.gap;
         Constraint::Length(total.saturating_add(gaps).saturating_add(self.axis_padding()))
@@ -317,8 +341,8 @@ impl View for Row<'_> {
     fn render(&self, canvas: &mut Canvas<'_>) {
         self.0.render(canvas);
     }
-    fn constraint(&self) -> Constraint {
-        self.0.constraint()
+    fn constraint(&self, axis: Direction) -> Constraint {
+        self.0.constraint(axis)
     }
 }
 
@@ -367,8 +391,8 @@ impl View for Column<'_> {
     fn render(&self, canvas: &mut Canvas<'_>) {
         self.0.render(canvas);
     }
-    fn constraint(&self) -> Constraint {
-        self.0.constraint()
+    fn constraint(&self, axis: Direction) -> Constraint {
+        self.0.constraint(axis)
     }
 }
 
@@ -428,7 +452,9 @@ impl<V: View> View for Scroll<'_, V> {
     fn render(&self, canvas: &mut Canvas<'_>) {
         let (width, height) = (canvas.width(), canvas.height());
         // A view that asks for a share of its parent has no height of its own to scroll past.
-        let content = match self.view.constraint() {
+        // The vertical axis by name: this scrolls rows, so the child's *height* is the question,
+        // whatever axis the stack above happened to be dividing.
+        let content = match self.view.constraint(Direction::Vertical) {
             Constraint::Length(rows) => rows.max(height),
             _ => height,
         };
@@ -528,8 +554,8 @@ impl<V: View> View for When<V> {
             self.view.render(canvas);
         }
     }
-    fn constraint(&self) -> Constraint {
-        self.view.constraint()
+    fn constraint(&self, axis: Direction) -> Constraint {
+        self.view.constraint(axis)
     }
 }
 
@@ -688,7 +714,7 @@ mod tests {
     #[test]
     fn a_boxed_view_behaves_like_the_view_it_wraps() {
         let boxed: Box<dyn View> = Box::new(Fill::new('z', Role::Text).length(2));
-        assert_eq!(boxed.constraint(), Constraint::Length(2));
+        assert_eq!(boxed.constraint(Direction::Horizontal), Constraint::Length(2));
         let view = Row::new().child(boxed).child(Fill::new('.', Role::Text));
         assert_eq!(rows(&view, 5, 1), ["zz..."]);
     }
@@ -702,14 +728,14 @@ mod tests {
             .child(Fill::new('b', Role::Text).length(4))
             .fit();
         // Three and four rows, one row of gap, two rows of padding at each end.
-        assert_eq!(column.constraint(), Constraint::Length(12));
+        assert_eq!(column.constraint(Direction::Vertical), Constraint::Length(12));
     }
 
     #[test]
     fn a_stack_asks_for_a_share_of_its_parent_unless_told_to_fit() {
         let children = || Column::new().child(Fill::new('a', Role::Text).length(3));
-        assert_eq!(children().constraint(), Constraint::Fill(1));
-        assert_eq!(children().fit().constraint(), Constraint::Length(3));
+        assert_eq!(children().constraint(Direction::Vertical), Constraint::Fill(1));
+        assert_eq!(children().fit().constraint(Direction::Vertical), Constraint::Length(3));
     }
 
     #[test]
@@ -719,7 +745,7 @@ mod tests {
             .child(Fill::new('a', Role::Text).length(3))
             .child(Fill::new('b', Role::Text))
             .fit();
-        assert_eq!(column.constraint(), Constraint::Fill(1));
+        assert_eq!(column.constraint(Direction::Vertical), Constraint::Fill(1));
     }
 
     #[test]
@@ -730,7 +756,72 @@ mod tests {
             .child(Fill::new('a', Role::Text).length(4))
             .child(Fill::new('b', Role::Text).length(4))
             .fit();
-        assert_eq!(row.constraint(), Constraint::Length(12));
+        assert_eq!(row.constraint(Direction::Horizontal), Constraint::Length(12));
+    }
+
+    // ---- Per-axis constraints -----------------------------------------------------------
+
+    #[test]
+    fn the_same_view_answers_a_row_and_a_column_differently() {
+        // A label is one row tall and five columns wide, and neither number is an answer to
+        // the other question. This is the whole reason `constraint` takes an axis.
+        let label = Text::new("hello");
+        assert_eq!(label.constraint(Direction::Vertical), Constraint::Length(1));
+        assert_eq!(label.constraint(Direction::Horizontal), Constraint::Length(5));
+    }
+
+    #[test]
+    fn a_row_gives_a_label_the_width_of_its_text_unasked() {
+        // No `.length(5)` anywhere: the `Row` asked, and the label knew.
+        let view = Row::new()
+            .child(Text::new("hello"))
+            .child(Fill::new('.', Role::Text))
+            .child(Text::new("bye"));
+        assert_eq!(rows(&view, 12, 1), ["hello....bye"]);
+    }
+
+    #[test]
+    fn a_column_gives_the_same_label_one_row_and_the_full_width() {
+        let view = Column::new().child(Text::new("hello")).child(Fill::new('.', Role::Text));
+        assert_eq!(rows(&view, 5, 3), ["hello", ".....", "....."]);
+    }
+
+    #[test]
+    fn an_override_answers_whichever_axis_its_parent_asks_about() {
+        // `.length(2)` is two columns in a `Row` and two rows in a `Column`; the view it wraps
+        // is not consulted on either axis.
+        let fixed = Text::new("hello").length(2);
+        assert_eq!(fixed.constraint(Direction::Horizontal), Constraint::Length(2));
+        assert_eq!(fixed.constraint(Direction::Vertical), Constraint::Length(2));
+    }
+
+    #[test]
+    fn a_fitted_stack_is_as_wide_as_its_widest_child_is_tall_as_its_tallest() {
+        // Along its own direction a stack adds its children up; across it, they overlap, so the
+        // widest one speaks for all of them.
+        let column = Column::new()
+            .padding(Padding::horizontal(1))
+            .child(Text::new("hello"))
+            .child(Text::new("hi"))
+            .fit();
+        assert_eq!(column.constraint(Direction::Vertical), Constraint::Length(2));
+        assert_eq!(column.constraint(Direction::Horizontal), Constraint::Length(7));
+    }
+
+    #[test]
+    fn a_fitted_stack_with_one_unmeasurable_child_across_cannot_measure_across() {
+        // The same rule as along the axis: `Fill` is a share of a parent this stack cannot see.
+        let column =
+            Column::new().child(Text::new("hello")).child(Fill::new('.', Role::Text)).fit();
+        assert_eq!(column.constraint(Direction::Horizontal), Constraint::Fill(1));
+    }
+
+    #[test]
+    fn a_row_of_labels_nested_in_a_column_sizes_itself_on_both_axes() {
+        let row = Row::new().gap(1).child(Text::new("hello")).child(Text::new("bye")).fit();
+        let view = Column::new().child(row).child(Fill::new('.', Role::Text));
+        // One row for the labels, nine columns of it used, the rest to the filler.
+        assert_eq!(rows(&view, 11, 2), ["hello bye  ", "..........."]);
     }
 
     // ---- Scroll -------------------------------------------------------------------------
@@ -823,7 +914,10 @@ mod tests {
         let hits = Hits::new();
         let plain = Fill::new('a', Role::Text).length(2);
         let decorated = Fill::new('a', Role::Text).length(2).hit(&hits, ());
-        assert_eq!(decorated.constraint(), plain.constraint());
+        assert_eq!(
+            decorated.constraint(Direction::Vertical),
+            plain.constraint(Direction::Vertical)
+        );
         assert_eq!(rows(&decorated, 4, 1), rows(&plain, 4, 1));
     }
 }

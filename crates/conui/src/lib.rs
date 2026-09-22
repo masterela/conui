@@ -33,11 +33,11 @@
 //!             .child(
 //!                 Row::new()
 //!                     .gap(2)
-//!                     .child(Stat::new("SCORE", 42).length(4))
+//!                     .child(Stat::new("SCORE", 42))
 //!                     .child(Gauge::new(0.6).label("LOAD").flex(1))
 //!                     .length(4),
 //!             )
-//!             .child(Hints::new().key("Q", "quit").length(1));
+//!             .child(Hints::new().key("Q", "quit"));
 //!         frame.render_full(&screen);
 //!     })?;
 //! }

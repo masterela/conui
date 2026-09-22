@@ -47,8 +47,6 @@ const MIN_WIDTH: u16 = 62;
 const MIN_HEIGHT: u16 = 16;
 /// The sidebar is fixed: figures that jump about as the window resizes are hard to read.
 const SIDEBAR: u16 = 24;
-/// Width of one three-digit block-figure stat, from `Stat`'s own metrics.
-const STAT_WIDTH: u16 = 11;
 /// Columns the full key legend needs. Below this the footer shows the short one instead.
 const FULL_LEGEND: u16 = 71;
 
@@ -162,8 +160,11 @@ fn sidebar(todo: &Todo) -> impl View + '_ {
         .child(
             Row::new()
                 .gap(2)
-                .child(Stat::new("DONE", done as i64).length(STAT_WIDTH))
-                .child(Stat::new("OPEN", open as i64).role(Role::Warn).length(STAT_WIDTH))
+                // No widths: a `Stat` is as wide as the wider of its label and its figures, and a
+                // `Row` asks it. The eleven that used to be written here was that same number,
+                // copied out of `Stat`'s metrics by hand.
+                .child(Stat::new("DONE", done as i64))
+                .child(Stat::new("OPEN", open as i64).role(Role::Warn))
                 .length(4),
         )
         .child(

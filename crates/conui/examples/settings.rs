@@ -913,8 +913,12 @@ impl Ui {
             .fit()
     }
 
-    /// One form row: a label, then a select. Both need an explicit width, because in a `Row` a
-    /// view's `constraint()` is read as a *width* and a widget's default is its height.
+    /// One form row: a label, then a select.
+    ///
+    /// Both widths are explicit, and now for a reason rather than because the framework could not
+    /// answer: every row has to use the *same* two columns or the form stops lining up, so the
+    /// label is `LABEL_WIDTH` wide rather than as wide as its own text, and the select is sized for
+    /// the widest option on the screen rather than its own.
     fn select_row(&self, label: &str, id: Id, options: &'static [&'static str]) -> impl View + '_ {
         let dropdown = self.dropdown(id).map(|(dropdown, _)| dropdown).expect("a select id");
         Row::new()
@@ -950,13 +954,15 @@ impl Ui {
         }
         Row::new()
             .gap(2)
-            .child(revert.hit(&self.hits, Id::Revert).length(Button::width("Revert")))
+            // No widths here: a button knows how wide it is, and a `Row` now asks it. These two
+            // used to carry `.length(Button::width("Revert"))`, which restated the label — and a
+            // label changed in one place and not the other is a button with a cropped word in it.
+            .child(revert.hit(&self.hits, Id::Revert))
             .child(
                 Button::new("Apply")
                     .accent()
                     .focused(self.focus.is(Id::Apply))
-                    .hit(&self.hits, Id::Apply)
-                    .length(Button::width("Apply")),
+                    .hit(&self.hits, Id::Apply),
             )
             .child(Spacer::new().flex(1))
     }
