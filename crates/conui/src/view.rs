@@ -115,6 +115,9 @@ pub trait ViewExt: View + Sized {
     ///
     /// The widget learns nothing: hit-testing is a decorator, which is why `Button` has no
     /// `on_click` and no id field. See [`Hits`] for what to do with the result.
+    ///
+    /// What lands is what showed: nothing is recorded for a view that was clipped away entirely or
+    /// scrolled out of its pane, because a pointer cannot have hit what was never drawn.
     fn hit<T: Copy>(self, hits: &Hits<T>, id: T) -> Hit<'_, T, Self> {
         Hit { view: self, hits, id }
     }
@@ -131,7 +134,14 @@ pub struct Hit<'a, T, V> {
 
 impl<T: Copy, V: View> View for Hit<'_, T, V> {
     fn render(&self, canvas: &mut Canvas<'_>) {
-        self.hits.record(self.id, canvas.screen_area());
+        // What was on screen, not what the region claimed: inside a `Scroll` a child above the fold
+        // has a negative origin, and the clamped version of that rect sits over the top row of the
+        // pane — a row showing something else entirely. Nothing visible, nothing recorded, so a
+        // click cannot resolve to a control that was scrolled away or clipped off.
+        let area = canvas.visible_area();
+        if !area.is_empty() {
+            self.hits.record(self.id, area);
+        }
         self.view.render(canvas);
     }
     fn constraint(&self, axis: Direction) -> Constraint {
@@ -907,6 +917,50 @@ mod tests {
         assert_eq!(hits.area_of('b'), Some(Rect::new(6, 1, 4, 1)));
         assert_eq!(hits.at(conui_cell::Pos::new(7, 1)), Some('b'));
         assert_eq!(hits.at(conui_cell::Pos::new(5, 1)), None, "the gap is nobody's");
+    }
+
+    /// A pane below a header, holding eight rows of which four show. The two hit-tested rows are
+    /// the first and the last, so scrolling puts one out of sight at each end in turn.
+    fn scrolled_pane<'a>(hits: &'a Hits<char>, viewport: &'a Viewport) -> impl View + use<'a> {
+        let content = Column::new()
+            .child(Fill::new('f', Role::Text).hit(hits, 'f').length(1))
+            .children((0..6).map(|_| Fill::new('-', Role::Dim).length(1)))
+            .child(Fill::new('l', Role::Text).hit(hits, 'l').length(1))
+            .fit();
+        Column::new()
+            .child(Fill::new('h', Role::Accent).length(1))
+            .child(Scroll::new(viewport, content).bare().length(4))
+    }
+
+    #[test]
+    fn a_control_scrolled_out_of_sight_cannot_be_clicked() {
+        let hits = Hits::new();
+        let viewport = Viewport::new();
+        let view = scrolled_pane(&hits, &viewport);
+
+        assert_eq!(rows(&view, 4, 5), ["hhhh", "ffff", "----", "----", "----"]);
+        assert_eq!(hits.area_of('f'), Some(Rect::new(0, 1, 4, 1)), "the top row of the pane");
+        assert_eq!(hits.area_of('l'), None, "the last row is below the fold");
+
+        // Scrolled to the bottom, the first row is above the pane. Its region's origin is negative
+        // there, and the rect that says so cannot exist — so the honest answer is no rect at all.
+        // Recording the clamped one would put it over the header, one row above the pane.
+        hits.clear();
+        viewport.bottom();
+        assert_eq!(rows(&view, 4, 5), ["hhhh", "----", "----", "----", "llll"]);
+        assert_eq!(hits.area_of('f'), None, "the first row has been scrolled away");
+        assert_eq!(hits.area_of('l'), Some(Rect::new(0, 4, 4, 1)));
+        assert_eq!(hits.at(conui_cell::Pos::new(1, 0)), None, "the header is not the first row");
+    }
+
+    #[test]
+    fn a_half_visible_control_is_recorded_as_the_half_that_shows() {
+        let hits = Hits::new();
+        let view = Column::new().child(Fill::new('a', Role::Text).hit(&hits, 'a').length(3));
+        // Two rows of a three-row control, in a window with no room for the third.
+        assert_eq!(rows(&view, 4, 2), ["aaaa", "aaaa"]);
+        assert_eq!(hits.area_of('a'), Some(Rect::new(0, 0, 4, 2)));
+        assert_eq!(hits.at(conui_cell::Pos::new(0, 2)), None, "the clipped row is off screen");
     }
 
     #[test]

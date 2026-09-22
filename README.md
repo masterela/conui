@@ -417,6 +417,13 @@ field, and a hit-tested view provably asks for and draws exactly what the undeco
 `Hits::at` searches the last region recorded first, so an overlay drawn in the second pass wins over
 whatever it covers.
 
+What gets recorded is the part of the region that was *on screen*, not the part layout asked for. The
+difference shows up inside a `Scroll`: a child above the fold has a negative origin, which no `Rect`
+can hold, so the clamped version of it would sit over the top row of the pane — a row showing
+something else entirely. A control scrolled out of sight, or clipped away by a window too small for
+it, records nothing and cannot be clicked. `Canvas::visible_area()` is that answer for anything
+drawing at the immediate layer, next to `screen_area()`, which is where the region claims to be.
+
 Resolving *within* a control is the widget's own business, and each one that needs it exposes the
 one measurement only it can make: `Tabs::index_at` (a click in the gap between two labels belongs to
 neither), `Selection::row_at` (which reads the offset the last window recorded, because a row number
@@ -548,7 +555,7 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace                  # 420 unit tests + 20 doctests
+cargo test --workspace                  # 426 unit tests + 20 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 27 more
 cargo test -p conui --example settings  # 55 more
@@ -572,7 +579,7 @@ with no local compiler to check it. Rustdoc needs no such thing: it reads the sa
 and it runs with `-D warnings` so a dead intra-doc link fails the build rather than waiting to be
 found by a reader.
 
-Test counts by crate: `conui` 283, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
+Test counts by crate: `conui` 289, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what
