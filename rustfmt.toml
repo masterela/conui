@@ -1,0 +1,8 @@
+# A hundred columns, and short constructs allowed to stay on one line.
+#
+# `Max` matters more than it looks: this codebase is full of small coordinate expressions and
+# single-line matches over roles and directions, and the default heuristics break each of them
+# across four lines. The result is technically formatted and much harder to read.
+max_width = 100
+use_small_heuristics = "Max"
+edition = "2024"

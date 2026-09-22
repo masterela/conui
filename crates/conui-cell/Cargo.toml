@@ -1,0 +1,13 @@
+[package]
+name = "conui-cell"
+description = "Grapheme-aware terminal cell buffer, colors, styles and frame differ for conui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+unicode-width.workspace = true
+unicode-segmentation.workspace = true

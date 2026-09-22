@@ -1,0 +1,11 @@
+[package]
+name = "conui-input"
+description = "Incremental terminal input parser: keys, mouse, bracketed paste and focus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
