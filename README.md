@@ -119,12 +119,12 @@ commit to it, which a `Role` cannot express and a `Paint` closure can. The whole
 the mouse too: click a tab, a field or a button, click a select to open it, click an option to choose
 it, click anywhere else to dismiss it. Clicking into the text field puts the caret where you pointed,
 even when the field has scrolled sideways. The `ABOUT` tab holds more text than fits and scrolls —
-with the wheel, the arrows, `PAGE UP`/`PAGE DOWN`, `HOME` and `END` — while the buttons below it stay
-put. `/` over that pane opens a find field in the footer and `n` repeats the search: the viewport
-scrolls the least that brings the match into view, and the pane is composed from a table so that the
-search can count the row a word is on — a layout will not tell you that. `--dump` takes `--open` and
-`--tab N` so any state of it can be printed as text, which is how most of its tests assert on the
-layout.
+with the wheel, the arrows, `PAGE UP`/`PAGE DOWN`, `HOME` and `END`, or by dragging its scrollbar's
+thumb, which pages when you press the track beside it — while the buttons below it stay put. `/` over
+that pane opens a find field in the footer and `n` repeats the search: the viewport scrolls the least
+that brings the match into view, and the pane is composed from a table so that the search can count
+the row a word is on — a layout will not tell you that. `--dump` takes `--open` and `--tab N` so any
+state of it can be printed as text, which is how most of its tests assert on the layout.
 
 ## Quick start
 
@@ -496,6 +496,16 @@ draws nothing at all when everything fits — a permanently full bar trains the 
 and never shows the thumb at an end it has not reached, because a bar that looks finished with a row
 still to read is worse than no bar.
 
+It is also draggable, which is two methods rather than a mode: `thumb(height)` gives the rows the
+thumb covers, so a press can tell whether it grabbed the thumb or hit the track beside it, and
+`offset_at(top, height)` says which offset draws the thumb at a given row. The second is defined by
+*asking* the first — a binary search over offsets, since the thumb only moves down as the offset grows
+— rather than by inverting its arithmetic somewhere else, which is how a thumb comes to jump out from
+under the pointer halfway down a drag. What the app keeps is one `Option<u16>`: how far below the
+thumb's top the press landed, so the thumb follows the hand instead of recentring itself on it. A drag
+belongs to whatever the press grabbed, so it goes on working when the pointer wanders off a bar one
+column wide, and the release ends it.
+
 ## The crates
 
 conui is the top of a stack that is useful at every level, so no layer is a dead end.
@@ -536,10 +546,10 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace                  # 401 unit tests + 19 doctests
+cargo test --workspace                  # 405 unit tests + 20 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 26 more
-cargo test -p conui --example settings  # 48 more
+cargo test -p conui --example settings  # 55 more
 cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
@@ -554,7 +564,7 @@ just Linux, because the first run of this workflow found dead code in `platform/
 Linux-only lint job structurally cannot see, and that file is the one with no local compiler to check
 it.
 
-Test counts by crate: `conui` 264, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
+Test counts by crate: `conui` 268, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what
