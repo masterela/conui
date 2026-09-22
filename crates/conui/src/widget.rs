@@ -1001,6 +1001,84 @@ impl View for List<'_> {
     }
 }
 
+// ---- Scrollbar --------------------------------------------------------------------------
+
+/// A one-column indicator of how much is out of sight, and where you are in it.
+///
+/// [`Scroll`](crate::view::Scroll) draws one on its own; this is separately public because a
+/// [`List`] scrolls itself and may want one too — `Scrollbar::new(selection.offset(), rows.len())`
+/// beside it, in a `Row` — and because the numbers are plain enough that nothing here needs to be
+/// hidden.
+///
+/// Draws nothing at all when everything fits. A permanently full-length bar is noise that trains
+/// the eye to stop seeing it, and then it fails to say the one thing it is for.
+pub struct Scrollbar {
+    offset: usize,
+    content: usize,
+    role: Role,
+    track_role: Role,
+}
+
+impl Scrollbar {
+    pub fn new(offset: usize, content: usize) -> Self {
+        Self { offset, content, role: Role::Muted, track_role: Role::Dim }
+    }
+
+    /// The thumb's colour.
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    pub fn track_role(mut self, role: Role) -> Self {
+        self.track_role = role;
+        self
+    }
+
+    /// Thumb length and its top row, for a bar `height` rows tall. `None` when it all fits.
+    ///
+    /// Two properties matter more than proportionality: the thumb is never shorter than one row, so
+    /// a long document does not lose it entirely, and it touches the top only at the top and the
+    /// bottom only at the bottom — a bar that looks finished with two rows left to read is a lie.
+    fn thumb(&self, height: u16) -> Option<(u16, u16)> {
+        if height == 0 || self.content <= usize::from(height) {
+            return None;
+        }
+        let (rows, content) = (usize::from(height), self.content);
+        let length = ((rows * rows + content / 2) / content).clamp(1, rows);
+        let travel = rows - length;
+        let furthest = content - rows;
+        let offset = self.offset.min(furthest);
+        // Interior offsets are mapped to interior positions rather than rounded to the nearest
+        // row, which is what keeps both ends honest: any rounding at all would let a thumb touch
+        // the bottom with a row still to read, and then the bar is worse than nothing.
+        let top = match (offset, travel) {
+            (0, _) => 0,
+            _ if offset >= furthest => travel,
+            // Two positions and more than two offsets: there is nowhere in between to put it, so
+            // the end that must not lie is the one it stays away from.
+            (_, 0 | 1) => 0,
+            // `max(1)` for the one interior offset of `furthest == 2`, which has no span to
+            // divide by and belongs at the first interior row regardless.
+            _ => 1 + (offset - 1) * (travel - 2) / (furthest - 2).max(1),
+        };
+        Some((length as u16, top as u16))
+    }
+}
+
+impl View for Scrollbar {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let height = canvas.height();
+        let Some((length, top)) = self.thumb(height) else { return };
+        for row in 0..i32::from(height) {
+            canvas.put(0, row, &line::VERTICAL.to_string(), self.track_role);
+        }
+        for row in 0..i32::from(length) {
+            canvas.put(0, i32::from(top) + row, "█", self.role);
+        }
+    }
+}
+
 // ---- Input ------------------------------------------------------------------------------
 
 /// A single-line text field over an [`Editor`] you own.
@@ -1874,6 +1952,80 @@ mod tests {
                 let _ = rows(&list, width, height);
             }
         }
+    }
+
+    // ---- Scrollbar ----------------------------------------------------------------------
+
+    /// The bar as one string, top to bottom, which is easier to read than a column of rows.
+    fn bar(offset: usize, content: usize, height: u16) -> String {
+        rows(&Scrollbar::new(offset, content), 1, height).concat()
+    }
+
+    #[test]
+    fn a_scrollbar_thumb_is_proportional_and_starts_at_the_top() {
+        assert_eq!(bar(0, 20, 10), "█████│││││");
+    }
+
+    #[test]
+    fn a_scrollbar_touches_an_end_only_at_that_end() {
+        // Worth more than proportionality: a bar that looks finished with a row still to read is
+        // a lie, and one that looks untouched after scrolling makes people scroll again.
+        assert_eq!(bar(10, 20, 10), "│││││█████");
+        assert_eq!(bar(9, 20, 10), "││││█████│", "one row short of the end, and it shows");
+        assert_eq!(bar(1, 20, 10), "│█████││││", "one row down from the top, and it shows");
+    }
+
+    #[test]
+    fn every_scrollbar_position_is_honest_about_the_ends() {
+        // Exhaustively, because the arithmetic has four cases and the interesting ones are the
+        // boundaries between them — `furthest == 2` and `travel == 1` are each one offset wide.
+        for content in 2..60usize {
+            for height in 1..16u16 {
+                let furthest = content.saturating_sub(usize::from(height));
+                for offset in 0..=furthest {
+                    let Some((length, top)) = Scrollbar::new(offset, content).thumb(height) else {
+                        continue;
+                    };
+                    let travel = height - length;
+                    let at = format!("content {content} in {height} rows at {offset}");
+                    assert!(length >= 1, "the thumb must stay findable: {at}");
+                    assert!(top + length <= height, "and inside the track: {at}");
+                    // A thumb that has not moved must mean nothing has been scrolled, and a thumb
+                    // at the bottom must mean there is nothing left to read. The converses are
+                    // what a track too short to hold three positions cannot promise.
+                    if offset == 0 {
+                        assert_eq!(top, 0, "the top is the top: {at}");
+                    }
+                    if offset == furthest {
+                        assert_eq!(top, travel, "the end is the end: {at}");
+                    } else if travel > 0 {
+                        assert!(top < travel, "claims the end early: {at}");
+                    }
+                    if offset > 0 && travel >= 2 {
+                        assert!(top > 0, "hides a scroll that happened: {at}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_scrollbar_over_a_long_document_keeps_a_thumb_you_can_see() {
+        let drawn = bar(0, 10_000, 8);
+        assert_eq!(drawn.matches('█').count(), 1, "rounds to nothing, so it is given one row");
+        assert_eq!(drawn, "█│││││││");
+    }
+
+    #[test]
+    fn a_scrollbar_with_nothing_to_say_says_nothing() {
+        // Not a full-length thumb: a bar that is always there trains the eye to stop seeing it.
+        assert_eq!(bar(0, 4, 10), "          ");
+        assert_eq!(bar(0, 10, 10), "          ", "exactly fitting is still fitting");
+    }
+
+    #[test]
+    fn a_scrollbar_past_the_end_pins_to_the_bottom_rather_than_running_off_it() {
+        assert_eq!(bar(9_999, 20, 10), "│││││█████");
     }
 
     // ---- Input --------------------------------------------------------------------------
