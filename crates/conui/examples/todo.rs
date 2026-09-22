@@ -331,7 +331,7 @@ impl Todo {
             ("port the laya snake UI", true),
             ("ship List and Input", true),
             ("verify the windows backend on windows", false),
-            ("write a scroll viewport", false),
+            ("set up CI for linux and windows", false),
             ("publish 0.1 to crates.io", false),
         ];
         Self {
@@ -735,13 +735,17 @@ mod tests {
         let mut todo = app();
         todo.selection.set_selected(4);
         press(&mut todo, KeyCode::Char('e'));
-        assert_eq!(todo.editor.value(), "write a scroll viewport", "the field starts prefilled");
-        for _ in 0.."viewport".len() {
+        assert_eq!(
+            todo.editor.value(),
+            "set up CI for linux and windows",
+            "the field starts prefilled"
+        );
+        for _ in 0.."windows".len() {
             press(&mut todo, KeyCode::Backspace);
         }
-        type_text(&mut todo, "container");
+        type_text(&mut todo, "powershell");
         press(&mut todo, KeyCode::Enter);
-        assert_eq!(todo.tasks[4].text, "write a scroll container");
+        assert_eq!(todo.tasks[4].text, "set up CI for linux and powershell");
         assert_eq!(todo.tasks.len(), 6, "editing must not add a row");
     }
 

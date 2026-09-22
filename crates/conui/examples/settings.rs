@@ -17,6 +17,10 @@
 //! - **A click is resolved against last frame.** [`Hits<Id>`] collects where each control landed
 //!   while composing, and the mouse handler asks it what is under the pointer. Focus is declared;
 //!   hit-testing is observed. They are two structures because they answer two different questions.
+//! - **Scrolling is a shifted origin, not a re-layout.** The ABOUT tab holds more text than fits.
+//!   It is drawn in full, starting above the top of the pane, and clipped — so nothing in it knows
+//!   it is scrolled. What makes it possible is that the content can say how tall it is: a plain
+//!   column stretches to its parent, and `fit()` is the opt-in that makes it add itself up instead.
 //!
 //! Applying really does re-theme the running app, so the buttons are not decoration. The whole
 //! screen is usable with the mouse as well: click a tab, a field or a button, click a dropdown to
@@ -30,14 +34,14 @@
 use std::cell::Cell;
 use std::io;
 
-use conui::view::{Column, Paint, Row, Spacer, ViewExt};
+use conui::view::{Column, Paint, Row, Scroll, Spacer, ViewExt};
 use conui::widget::{
     Border, Button, Field, Gauge, Hints, Menu, Panel, Readout, Select, Tabs, Text,
 };
 use conui::widget::{Input, Rule};
 use conui::{
     App, BarStyle, Buffer, Config, Dropdown, Editor, Event, Focus, Frame, Hits, KeyCode,
-    MouseEvent, Pos, Rect, Role, Selection, Style, Theme, View,
+    MouseEvent, Pos, Rect, Role, Selection, Style, Theme, View, Viewport,
 };
 
 const MIN_WIDTH: u16 = 66;
@@ -49,6 +53,36 @@ const CONTROL_WIDTH: u16 = 22;
 const PREVIEW_WIDTH: u16 = 30;
 
 const TABS: [&str; 3] = ["APPEARANCE", "LAYOUT", "ABOUT"];
+
+/// The ABOUT prose, broken by hand rather than word-wrapped.
+///
+/// Wrapped text is worth its cost when the content is unknown, but its height then depends on the
+/// width it is given, and the thing measuring this pane wants a number. A `Text` counts its own
+/// newlines, so hard breaks make the content height exact at any width.
+const ABOUT: &str = "\
+A devkit for console applications with a proper user
+interface, in pure Rust. No curses, no crossterm, no
+ratatui: the backend is ours, and the dependency list is
+rustix, unicode-width and unicode-segmentation.";
+
+const LAYERS: &str = "\
+Two APIs over one renderer. Underneath is an immediate
+canvas you draw on; over it is a tree of views that lay
+themselves out. They meet at one method: a view is handed
+a canvas clipped to its own region and cannot escape it.";
+
+const STATE: &str = "\
+Views are stateless. Anything with a cursor, a selection
+or an open/closed flag borrows a plain struct that your
+app owns, for the frame. Nothing registers itself while
+drawing, so what has focus never depends on draw order.";
+
+const SCROLLING: &str = "\
+This pane is the example. The text below the fold is
+drawn in full, from an origin above the visible region,
+and the clip throws away the rest — nothing is re-laid
+out and the paragraphs cannot tell they are half off
+screen. Wheel, arrows, PAGE UP/DOWN, HOME and END.";
 const PALETTES: [&str; 3] = ["LAYA", "EMBER", "INHERIT"];
 const BARS: [&str; 4] = ["Rule", "Shaded", "Blocks", "Smooth"];
 const DENSITY: [&str; 3] = ["Compact", "Comfortable", "Spacious"];
@@ -130,6 +164,9 @@ enum Id {
     Label,
     Density,
     Sidebar,
+    /// The scrollable pane on the ABOUT tab. Focusable so the keyboard can scroll it, and
+    /// hit-tested so the wheel knows the pointer is over it rather than over the form.
+    About,
     Revert,
     Apply,
 }
@@ -160,6 +197,10 @@ struct Ui {
     label: Editor,
     density: Dropdown,
     sidebar: Dropdown,
+    /// How far the ABOUT pane has been scrolled. Unlike a [`Selection`] there is no cursor for a
+    /// window to follow here, so the offset genuinely is the state — and because it is, the wheel
+    /// over this pane does what a wheel normally does instead of moving a highlight.
+    about: Viewport,
     /// The last applied values, for the dirty marker and for Revert.
     saved: Values,
     status: String,
@@ -188,6 +229,7 @@ impl Ui {
             label: Editor::with(&saved.label),
             density: Dropdown::at(saved.density),
             sidebar: Dropdown::at(saved.sidebar),
+            about: Viewport::new(),
             saved,
             status: String::from("ready"),
             status_role: Role::Muted,
@@ -294,7 +336,7 @@ impl Ui {
         let fields: &[Id] = match self.tab.selected() {
             0 => &[Id::Palette, Id::Bars, Id::Label],
             1 => &[Id::Density, Id::Sidebar],
-            _ => &[],
+            _ => &[Id::About],
         };
         let ring: Vec<Id> = std::iter::once(Id::Tabs)
             .chain(fields.iter().copied())
@@ -394,6 +436,21 @@ impl Ui {
             Some(Id::Label) => {
                 self.label.handle(key);
             }
+            Some(Id::About) => {
+                // Scrolled, not navigated: there is nothing in the pane to select. None of this
+                // needs to know how long the text is or how tall the pane was — the viewport
+                // clamps against what the last frame actually showed, which is the only thing
+                // that knows.
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => self.about.scroll(-1),
+                    KeyCode::Down | KeyCode::Char('j') => self.about.scroll(1),
+                    KeyCode::PageUp => self.about.page_up(),
+                    KeyCode::PageDown => self.about.page_down(),
+                    KeyCode::Home => self.about.top(),
+                    KeyCode::End => self.about.bottom(),
+                    _ => {}
+                }
+            }
             Some(Id::Revert) if key.code == KeyCode::Enter => self.revert(),
             Some(Id::Apply) if key.code == KeyCode::Enter => return self.apply(),
             Some(id) => {
@@ -428,14 +485,21 @@ impl Ui {
 
     /// A click, resolved against where things were drawn last frame.
     ///
-    /// Only presses are acted on. A wheel does nothing here on purpose: the only scrollable thing
-    /// on this screen is an open dropdown, which never reaches this far, and a form that changes a
-    /// value because the pointer happened to be over it is a bug with a friendly face.
+    /// The wheel belongs to whatever is under the pointer, and it does not move focus: scrolling
+    /// something to read it is not the same as saying "talk to this one". Over anything that is not
+    /// the ABOUT pane it does nothing at all, because a form that changes a value because the
+    /// pointer happened to be over it is a bug with a friendly face.
     fn handle_mouse(&mut self, mouse: &MouseEvent) -> Flow {
+        let at = Pos::new(mouse.column, mouse.row);
+        if let Some(delta) = mouse.kind.scroll() {
+            if self.hits.at(at) == Some(Id::About) {
+                self.about.scroll(delta);
+            }
+            return Flow::Continue;
+        }
         if !mouse.is_click() {
             return Flow::Continue;
         }
-        let at = Pos::new(mouse.column, mouse.row);
         let Some(id) = self.hits.at(at) else {
             // Chrome: the header, a rule, the preview panel. Nothing to do, and deliberately not
             // "clear the focus" — losing your place because you clicked a border would be rude.
@@ -456,6 +520,8 @@ impl Ui {
                 }
             }
             Id::Label => {} // Focus only. Placing the caret would want Editor to take a column.
+            // Focus only, so the arrow keys carry on scrolling from where the wheel stopped.
+            Id::About => {}
             Id::Revert => self.revert(),
             Id::Apply => return self.apply(),
             select => {
@@ -539,24 +605,45 @@ impl Ui {
             _ => Box::new(
                 Column::new()
                     .gap(1)
-                    .child(Text::new("conui").accent().length(1))
                     .child(
-                        Text::new(
-                            "A devkit for console applications with a proper user interface, in \
-                             pure Rust. No curses, no crossterm, no ratatui.",
-                        )
-                        .muted()
-                        .wrapped()
-                        .length(3),
+                        Scroll::new(&self.about, self.about_text())
+                            .hit(&self.hits, Id::About)
+                            .flex(1),
                     )
-                    .child(
-                        Field::new("VERSION", env!("CARGO_PKG_VERSION")).value_column(10).length(1),
-                    )
-                    .child(Field::new("LICENSE", "MIT OR Apache-2.0").value_column(10).length(1))
-                    .child(Spacer::new().flex(1))
                     .child(self.buttons().length(1)),
             ),
         }
+    }
+
+    /// The ABOUT text: more of it than fits, on purpose.
+    ///
+    /// `fit()` is the whole trick. A plain `Column` asks for a share of its parent, which is
+    /// another way of saying "I will be whatever height you give me" — and something that adapts to
+    /// its region has nothing to scroll. A fitted one adds its children up and asks for *that*, so
+    /// [`Scroll`] has two numbers to compare. Every child here reports its own height without being
+    /// told: a `Text` counts its lines, a `Rule` is one row, and the nested column adds up its two.
+    fn about_text(&self) -> Column<'_> {
+        Column::new()
+            .gap(1)
+            .child(Text::new("conui").accent())
+            .child(Text::new(ABOUT).muted())
+            .child(
+                Column::new()
+                    .child(Field::new("VERSION", env!("CARGO_PKG_VERSION")).value_column(10))
+                    .child(Field::new("LICENSE", "MIT OR Apache-2.0").value_column(10))
+                    .fit(),
+            )
+            .child(Rule::titled("LAYERS"))
+            .child(Text::new(LAYERS).muted())
+            .child(Rule::titled("STATE"))
+            .child(Text::new(STATE).muted())
+            .child(Rule::titled("SCROLLING"))
+            .child(Text::new(SCROLLING).muted())
+            // A column of clear air between the text and the scrollbar. `Scroll` reserves the bar's
+            // column before the content is laid out rather than painting over it afterwards, so
+            // without this the rules would run right up against the track and read as joined to it.
+            .padding(conui::Padding { right: 1, ..conui::Padding::ZERO })
+            .fit()
     }
 
     /// One form row: a label, then a select. Both need an explicit width, because in a `Row` a
@@ -660,6 +747,9 @@ impl Ui {
         let hints = match self.focus.current() {
             Some(Id::Tabs) => Hints::new().key("←/→", "tab").key("TAB", "next"),
             Some(Id::Label) => Hints::new().key("TYPE", "edit").key("TAB", "next"),
+            Some(Id::About) => {
+                Hints::new().key("↑/↓", "scroll").key("PGUP/PGDN", "page").key("TAB", "next")
+            }
             Some(Id::Revert | Id::Apply) => Hints::new().key("↵", "press").key("TAB", "next"),
             _ => Hints::new().key("←/→", "change").key("↵", "open").key("TAB", "next"),
         };
@@ -1018,13 +1108,167 @@ mod tests {
     }
 
     #[test]
-    fn the_about_tab_has_no_fields_but_still_has_its_buttons() {
-        let mut ui = Ui::new();
-        ui.tab.set_selected(2);
-        ui.retarget();
-        assert_eq!(ui.focus.ring(), &[Id::Tabs, Id::Revert, Id::Apply]);
+    fn the_about_tab_has_no_form_fields_but_still_has_its_buttons() {
+        let ui = about_tab();
+        assert_eq!(ui.focus.ring(), &[Id::Tabs, Id::About, Id::Revert, Id::Apply]);
         let rendered = screen(&ui, 88, 24);
         assert!(rendered.contains("Apply"), "got {rendered}");
         assert!(rendered.contains("MIT OR Apache-2.0"), "got {rendered}");
+    }
+
+    // ---- Scrolling -----------------------------------------------------------------------
+
+    /// The ABOUT tab, with its pane focused and drawn once so the viewport knows its own size.
+    fn about_tab() -> Ui {
+        let mut ui = Ui::new();
+        ui.tab.set_selected(2);
+        ui.retarget();
+        ui.focus.focus(Id::About);
+        let _ = screen(&ui, 88, 24);
+        ui
+    }
+
+    fn wheel(ui: &mut Ui, column: u16, row: u16, down: bool) {
+        let _ = screen(ui, 88, 24);
+        ui.handle(&Event::Mouse(MouseEvent {
+            kind: if down { conui::MouseKind::ScrollDown } else { conui::MouseKind::ScrollUp },
+            column,
+            row,
+            modifiers: conui::Modifiers::NONE,
+        }));
+    }
+
+    #[test]
+    fn the_about_pane_holds_more_than_it_shows() {
+        let ui = about_tab();
+        assert!(ui.about.is_scrollable(), "nothing below the fold, so nothing to demonstrate");
+        // The buttons are outside the scrolled region, so they stay put while the text moves.
+        assert!(screen(&ui, 88, 24).contains("Revert"));
+    }
+
+    #[test]
+    fn the_end_of_the_text_is_reachable_and_the_pane_stops_there() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::End);
+        let rendered = screen(&ui, 88, 24);
+        assert!(rendered.contains("HOME and END"), "the last line never came into view");
+        assert!(rendered.contains("Revert"), "the buttons scrolled away with the text");
+        assert_eq!(ui.about.offset(), ui.about.overflow(), "the end is the end");
+
+        // And it is the end: pressing on does not reveal blank rows below the text.
+        for _ in 0..40 {
+            press(&mut ui, KeyCode::Down);
+        }
+        assert_eq!(ui.about.offset(), ui.about.overflow());
+        assert_eq!(screen(&ui, 88, 24), rendered);
+    }
+
+    #[test]
+    fn scrolling_up_from_the_top_is_a_no_op_rather_than_an_underflow() {
+        let mut ui = about_tab();
+        assert!(ui.about.is_at_top());
+        for _ in 0..5 {
+            press(&mut ui, KeyCode::Up);
+        }
+        assert_eq!(ui.about.offset(), 0);
+        press(&mut ui, KeyCode::PageUp);
+        assert_eq!(ui.about.offset(), 0);
+    }
+
+    #[test]
+    fn a_page_is_most_of_a_paneful_and_a_row_is_a_row() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::Down);
+        assert_eq!(ui.about.offset(), 1);
+        press(&mut ui, KeyCode::PageDown);
+        // One row of overlap, so the line you were reading is still on screen.
+        assert_eq!(ui.about.offset(), 1 + ui.about.height() - 1);
+        press(&mut ui, KeyCode::Home);
+        assert!(ui.about.is_at_top());
+    }
+
+    #[test]
+    fn the_text_that_scrolls_away_is_gone_rather_than_left_behind() {
+        let mut ui = about_tab();
+        let top = screen(&ui, 88, 24);
+        assert!(top.contains("A devkit for console applications"));
+        press(&mut ui, KeyCode::End);
+        let bottom = screen(&ui, 88, 24);
+        assert!(
+            !bottom.contains("A devkit for console applications"),
+            "the first paragraph is still there after scrolling past it: {bottom}"
+        );
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_pane_it_is_over_without_taking_focus() {
+        let mut ui = about_tab();
+        ui.focus.focus(Id::Apply);
+        let pane = ui.hits.area_of(Id::About).expect("the pane drew");
+        wheel(&mut ui, pane.x + 2, pane.y + 2, true);
+        assert_eq!(ui.about.offset(), 1);
+        // Reading something is not the same as saying "talk to this one".
+        assert_eq!(ui.focus.current(), Some(Id::Apply), "the wheel moved focus");
+        wheel(&mut ui, pane.x + 2, pane.y + 2, false);
+        assert_eq!(ui.about.offset(), 0);
+    }
+
+    #[test]
+    fn the_wheel_away_from_the_pane_scrolls_nothing() {
+        let mut ui = about_tab();
+        // The footer, which is below the pane and belongs to no control.
+        wheel(&mut ui, 4, 22, true);
+        assert_eq!(ui.about.offset(), 0);
+    }
+
+    #[test]
+    fn the_wheel_over_a_form_does_not_change_a_value() {
+        let mut ui = Ui::new();
+        let (x, y) = centre_of(&mut ui, Id::Bars);
+        let before = ui.values();
+        wheel(&mut ui, x, y, true);
+        wheel(&mut ui, x, y, false);
+        assert_eq!(ui.values(), before, "a wheel over a select changed the setting under it");
+        assert!(!ui.is_modified());
+    }
+
+    #[test]
+    fn switching_tabs_away_and_back_keeps_your_place_in_the_text() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::PageDown);
+        let offset = ui.about.offset();
+        assert!(offset > 0);
+
+        ui.focus.focus(Id::Tabs);
+        press(&mut ui, KeyCode::Left);
+        assert_eq!(ui.tab.selected(), 1);
+        let _ = screen(&ui, 88, 24);
+        press(&mut ui, KeyCode::Right);
+        let _ = screen(&ui, 88, 24);
+        assert_eq!(ui.about.offset(), offset, "the pane forgot where you had got to");
+    }
+
+    #[test]
+    fn a_pane_taller_than_its_text_has_nothing_to_scroll() {
+        let mut ui = about_tab();
+        // Tall enough for every line at once, so there is no bar and no offset to have.
+        let _ = screen(&ui, 88, 60);
+        assert!(!ui.about.is_scrollable());
+        press(&mut ui, KeyCode::PageDown);
+        assert_eq!(ui.about.offset(), 0);
+    }
+
+    #[test]
+    fn a_pane_that_shrinks_under_a_scrolled_offset_shows_the_end_not_a_blank() {
+        let mut ui = about_tab();
+        press(&mut ui, KeyCode::End);
+        let offset = ui.about.offset();
+        // A much taller pane can show more at once, so the same offset would leave blank rows at
+        // the bottom. The next draw is what corrects it, because the draw is what knows.
+        let rendered = screen(&ui, 88, 40);
+        assert!(ui.about.offset() < offset, "the offset survived a pane that outgrew it");
+        assert!(rendered.contains("HOME and END"), "got {rendered}");
+        let last = rendered.lines().filter(|line| line.contains("HOME and END")).count();
+        assert_eq!(last, 1);
     }
 }

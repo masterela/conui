@@ -25,7 +25,8 @@ use conui_cell::{Padding, Rect};
 
 use crate::canvas::Canvas;
 use crate::layout::{Constraint, Direction, Layout};
-use crate::state::Hits;
+use crate::state::{Hits, Viewport};
+use crate::widget::Scrollbar;
 
 /// Something that can draw itself into a region.
 pub trait View {
@@ -174,11 +175,12 @@ pub struct Stack<'a> {
     children: Vec<Box<dyn View + 'a>>,
     gap: u16,
     padding: Padding,
+    fit: bool,
 }
 
 impl<'a> Stack<'a> {
     pub fn new(direction: Direction) -> Self {
-        Self { direction, children: Vec::new(), gap: 0, padding: Padding::ZERO }
+        Self { direction, children: Vec::new(), gap: 0, padding: Padding::ZERO, fit: false }
     }
 
     pub fn child(mut self, view: impl View + 'a) -> Self {
@@ -206,12 +208,34 @@ impl<'a> Stack<'a> {
         self
     }
 
+    /// Ask for exactly the space the children need, instead of a share of the parent.
+    ///
+    /// A stack normally asks for `Fill(1)`, because it has no idea what it is inside: a column of
+    /// three rows sitting beside a panel should take its half of the screen, not three rows of it.
+    /// This says the opposite — the size is the content's — which is what makes a stack scrollable,
+    /// since [`Scroll`] has nothing to scroll unless its child has an intrinsic size.
+    ///
+    /// Only meaningful if every child has one: if any asks for `Fill` or a percentage, its size is
+    /// a share of something this stack does not know, so the stack goes back to asking for `Fill`.
+    pub fn fit(mut self) -> Self {
+        self.fit = true;
+        self
+    }
+
     pub fn len(&self) -> usize {
         self.children.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.children.is_empty()
+    }
+
+    /// The padding along this stack's own axis, which is the part that adds to its size.
+    fn axis_padding(&self) -> u16 {
+        match self.direction {
+            Direction::Vertical => self.padding.top.saturating_add(self.padding.bottom),
+            Direction::Horizontal => self.padding.left.saturating_add(self.padding.right),
+        }
     }
 }
 
@@ -229,6 +253,22 @@ impl View for Stack<'_> {
             let mut region = canvas.sub(area);
             child.render(&mut region);
         }
+    }
+
+    fn constraint(&self) -> Constraint {
+        if !self.fit {
+            return Constraint::Fill(1);
+        }
+        let mut total: u16 = 0;
+        for child in &self.children {
+            match child.constraint() {
+                Constraint::Length(cells) => total = total.saturating_add(cells),
+                // A child whose size is a share of the parent cannot be added up here.
+                _ => return Constraint::Fill(1),
+            }
+        }
+        let gaps = self.children.len().saturating_sub(1) as u16 * self.gap;
+        Constraint::Length(total.saturating_add(gaps).saturating_add(self.axis_padding()))
     }
 }
 
@@ -259,6 +299,12 @@ impl<'a> Row<'a> {
         self.0 = self.0.padding(padding);
         self
     }
+
+    /// Ask for exactly the space the children need. See [`Stack::fit`].
+    pub fn fit(mut self) -> Self {
+        self.0 = self.0.fit();
+        self
+    }
 }
 
 impl Default for Row<'_> {
@@ -270,6 +316,9 @@ impl Default for Row<'_> {
 impl View for Row<'_> {
     fn render(&self, canvas: &mut Canvas<'_>) {
         self.0.render(canvas);
+    }
+    fn constraint(&self) -> Constraint {
+        self.0.constraint()
     }
 }
 
@@ -300,6 +349,12 @@ impl<'a> Column<'a> {
         self.0 = self.0.padding(padding);
         self
     }
+
+    /// Ask for exactly the space the children need. See [`Stack::fit`].
+    pub fn fit(mut self) -> Self {
+        self.0 = self.0.fit();
+        self
+    }
 }
 
 impl Default for Column<'_> {
@@ -311,6 +366,88 @@ impl Default for Column<'_> {
 impl View for Column<'_> {
     fn render(&self, canvas: &mut Canvas<'_>) {
         self.0.render(canvas);
+    }
+    fn constraint(&self) -> Constraint {
+        self.0.constraint()
+    }
+}
+
+/// A window onto a child taller than itself.
+///
+/// The general case of scrolling, for content with no selection to follow: a pane of prose, a log,
+/// a form longer than its panel. A [`List`](crate::widget::List) does its own scrolling because it
+/// has a cursor; this is what you use when there is nothing to put a cursor on.
+///
+/// The child is drawn *whole*, at its own natural height, starting above the visible region — see
+/// [`Canvas::shifted`] — so it does not know it is being scrolled and needs no cooperation. It does
+/// need an intrinsic height, because a view that asks for `Fill` is by definition happy with
+/// whatever it is given and so has nothing to scroll. Either `.fit()` a stack, or put a
+/// [`ViewExt::length`] on the child and say how tall it is.
+///
+/// ```
+/// use conui::view::{Column, Scroll, ViewExt};
+/// use conui::widget::Text;
+/// use conui::{Frame, Theme, Viewport};
+/// use conui_cell::Buffer;
+///
+/// let viewport = Viewport::new();
+/// let content = Column::new().children((0..8).map(|n| Text::new(format!("row {n}")).length(1)));
+/// // Four rows of a column of eight, scrolled down by two.
+/// viewport.scroll(2);
+/// let mut buffer = Buffer::new(8, 4);
+/// Frame::new(&mut buffer, Theme::LAYA).render_full(&Scroll::new(&viewport, content.fit()));
+/// assert!(buffer.row_text(0).starts_with("row 2"));
+/// assert_eq!(viewport.overflow(), 4, "four rows out of sight");
+/// // The last column is the scrollbar, and its thumb has moved off the top row.
+/// assert_eq!(buffer.row_text(0).chars().last(), Some('│'));
+/// assert_eq!(buffer.row_text(1).chars().last(), Some('█'));
+/// ```
+pub struct Scroll<'a, V> {
+    view: V,
+    viewport: &'a Viewport,
+    bar: bool,
+}
+
+impl<'a, V: View> Scroll<'a, V> {
+    pub fn new(viewport: &'a Viewport, view: V) -> Self {
+        Self { view, viewport, bar: true }
+    }
+
+    /// Draw without the scrollbar, giving the column back to the content.
+    ///
+    /// The bar is on by default because scrolled content with no indication of position is the most
+    /// common way a terminal UI loses someone: there is no window chrome to tell them there is more.
+    /// Turn it off when something else already says so — a footer reading `12/40`, say.
+    pub fn bare(mut self) -> Self {
+        self.bar = false;
+        self
+    }
+}
+
+impl<V: View> View for Scroll<'_, V> {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let (width, height) = (canvas.width(), canvas.height());
+        // A view that asks for a share of its parent has no height of its own to scroll past.
+        let content = match self.view.constraint() {
+            Constraint::Length(rows) => rows.max(height),
+            _ => height,
+        };
+        let offset = self.viewport.window(height, content);
+        // The bar costs a column, so reserve it before the content is laid out rather than drawing
+        // over the text afterwards: a scrollbar that eats the last character of every long line is
+        // worse than no scrollbar.
+        let show_bar = self.bar && content > height && width > 1;
+        let body = width - u16::from(show_bar);
+
+        {
+            let mut region = canvas.sub(Rect::sized(body, height));
+            let mut whole = region.shifted(0, -i32::from(offset), body, content);
+            self.view.render(&mut whole);
+        }
+        if show_bar {
+            let mut track = canvas.sub(Rect::new(width - 1, 0, 1, height));
+            Scrollbar::new(usize::from(offset), usize::from(content)).render(&mut track);
+        }
     }
 }
 
@@ -419,6 +556,8 @@ impl View for Fill {
 mod tests {
     use super::*;
     use crate::Role;
+    use crate::state::Viewport;
+    use crate::widget::Text;
     use conui_cell::Buffer;
 
     /// Render a view into a fresh buffer and return its rows.
@@ -552,6 +691,115 @@ mod tests {
         assert_eq!(boxed.constraint(), Constraint::Length(2));
         let view = Row::new().child(boxed).child(Fill::new('.', Role::Text));
         assert_eq!(rows(&view, 5, 1), ["zz..."]);
+    }
+
+    #[test]
+    fn a_fitted_stack_asks_for_the_space_its_children_need() {
+        let column = Column::new()
+            .gap(1)
+            .padding(Padding::vertical(2))
+            .child(Fill::new('a', Role::Text).length(3))
+            .child(Fill::new('b', Role::Text).length(4))
+            .fit();
+        // Three and four rows, one row of gap, two rows of padding at each end.
+        assert_eq!(column.constraint(), Constraint::Length(12));
+    }
+
+    #[test]
+    fn a_stack_asks_for_a_share_of_its_parent_unless_told_to_fit() {
+        let children = || Column::new().child(Fill::new('a', Role::Text).length(3));
+        assert_eq!(children().constraint(), Constraint::Fill(1));
+        assert_eq!(children().fit().constraint(), Constraint::Length(3));
+    }
+
+    #[test]
+    fn a_fitted_stack_holding_an_elastic_child_cannot_add_itself_up() {
+        // `Fill` means "a share of my parent", and this stack does not know what its parent is.
+        let column = Column::new()
+            .child(Fill::new('a', Role::Text).length(3))
+            .child(Fill::new('b', Role::Text))
+            .fit();
+        assert_eq!(column.constraint(), Constraint::Fill(1));
+    }
+
+    #[test]
+    fn a_fitted_row_measures_across_not_down() {
+        let row = Row::new()
+            .gap(2)
+            .padding(Padding::horizontal(1))
+            .child(Fill::new('a', Role::Text).length(4))
+            .child(Fill::new('b', Role::Text).length(4))
+            .fit();
+        assert_eq!(row.constraint(), Constraint::Length(12));
+    }
+
+    // ---- Scroll -------------------------------------------------------------------------
+
+    /// Eight rows of numbered content that knows its own height.
+    fn document<'a>() -> Column<'a> {
+        Column::new()
+            .children((0..8).map(|n| Fill::new(char::from(b'0' + n), Role::Text).length(1)))
+    }
+
+    #[test]
+    fn a_scroll_shows_a_window_of_taller_content() {
+        let viewport = Viewport::new();
+        let view = Scroll::new(&viewport, document().fit()).bare();
+        assert_eq!(rows(&view, 2, 3), ["00", "11", "22"]);
+        viewport.scroll(4);
+        assert_eq!(rows(&view, 2, 3), ["44", "55", "66"]);
+        assert_eq!(viewport.content(), 8);
+        assert_eq!(viewport.height(), 3);
+    }
+
+    #[test]
+    fn a_scroll_cannot_show_less_than_a_windowful_of_content_that_exists() {
+        let viewport = Viewport::at(99);
+        let view = Scroll::new(&viewport, document().fit()).bare();
+        // Scrolled far past the end, it shows the last three rows rather than nothing.
+        assert_eq!(rows(&view, 2, 3), ["55", "66", "77"]);
+    }
+
+    #[test]
+    fn content_that_fits_is_not_scrolled_and_gets_no_bar() {
+        let viewport = Viewport::new();
+        let view = Scroll::new(&viewport, document().fit());
+        let drawn = rows(&view, 3, 8);
+        assert_eq!(drawn[0], "000", "the bar column went back to the content");
+        assert!(!viewport.is_scrollable());
+    }
+
+    #[test]
+    fn a_scroll_over_elastic_content_has_nothing_to_scroll() {
+        // A view asking for `Fill` is by definition happy with the region it is given.
+        let viewport = Viewport::new();
+        let view = Scroll::new(&viewport, Fill::new('x', Role::Text));
+        assert_eq!(rows(&view, 2, 2), ["xx", "xx"]);
+        viewport.scroll(4);
+        assert_eq!(rows(&view, 2, 2), ["xx", "xx"], "and stays put");
+    }
+
+    #[test]
+    fn a_scroll_reserves_the_bar_column_before_the_content_is_laid_out() {
+        let viewport = Viewport::new();
+        let content = Column::new().children((0..6).map(|_| Text::new("ab").centered().length(1)));
+        let view = Scroll::new(&viewport, content.fit());
+        let drawn = rows(&view, 6, 3);
+        // Centred within five columns, not six: the bar's column is gone before layout sees it,
+        // rather than being painted over a line that had already used the space.
+        assert_eq!(drawn[0], " ab  █");
+        assert_eq!(drawn[2], " ab  │", "track below the thumb");
+    }
+
+    #[test]
+    fn scrolled_content_still_cannot_draw_outside_the_viewport() {
+        let viewport = Viewport::at(2);
+        let content = Column::new().children((0..9).map(|_| Fill::new('c', Role::Text).length(1)));
+        let view = Column::new()
+            .child(Fill::new('t', Role::Text).length(1))
+            .child(Scroll::new(&viewport, content.fit()).bare().length(2))
+            .child(Fill::new('b', Role::Text).length(1));
+        assert_eq!(rows(&view, 3, 4), ["ttt", "ccc", "ccc", "bbb"]);
     }
 
     #[test]

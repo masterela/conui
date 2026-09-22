@@ -129,6 +129,33 @@ impl<'a> Canvas<'a> {
         self.sub(area)
     }
 
+    /// A nested canvas at a signed offset, whose region may be larger than this one's.
+    ///
+    /// This is what a scroll viewport is, and it is why the canvas keeps its origin signed and its
+    /// clip separate from its extent. The child is handed its *whole* height at an origin above the
+    /// visible region — `shifted(0, -3, width, 40)` starts it three rows up — and the clip throws
+    /// away what is out of sight. Nothing is re-laid-out and the child cannot tell: it draws row 0
+    /// at its own row 0, exactly as it would if it were all on screen.
+    ///
+    /// Containment still holds. The clip is intersected with this canvas's, so a region that runs
+    /// past the edge is cut off there rather than scribbling on a sibling.
+    pub fn shifted(&mut self, x: i32, y: i32, width: u16, height: u16) -> Canvas<'_> {
+        let origin_x = self.origin_x + x;
+        let origin_y = self.origin_y + y;
+        // Intersected in signed space, because the requested region's top-left can be negative and
+        // a `Rect` cannot say so. Clamping first would move the region instead of cropping it.
+        let left = origin_x.max(i32::from(self.clip.x));
+        let top = origin_y.max(i32::from(self.clip.y));
+        let right = (origin_x + i32::from(width)).min(i32::from(self.clip.right()));
+        let bottom = (origin_y + i32::from(height)).min(i32::from(self.clip.bottom()));
+        let clip = if right > left && bottom > top {
+            Rect::new(left as u16, top as u16, (right - left) as u16, (bottom - top) as u16)
+        } else {
+            Rect::ZERO
+        };
+        Canvas { buffer: self.buffer, origin_x, origin_y, width, height, clip, theme: self.theme }
+    }
+
     // ---- Text ---------------------------------------------------------------------------
 
     /// Write `text` in the body colour.
@@ -632,6 +659,49 @@ mod tests {
             second.text(0, 0, "ab");
         });
         assert_eq!(buffer.row_text(2), "   ab     ");
+    }
+
+    #[test]
+    fn a_shifted_canvas_draws_its_whole_self_and_shows_a_window_of_it() {
+        let mut buffer = canvas_of(6, 2);
+        draw(&mut buffer, |canvas| {
+            // Six rows of content, shifted up by two, into a two-row window.
+            let mut inner = canvas.shifted(0, -2, 6, 6);
+            assert_eq!(inner.height(), 6, "the child is told its real height");
+            for row in 0..6 {
+                inner.text(0, row, &format!("row {row}"));
+            }
+        });
+        assert_eq!(buffer.row_text(0), "row 2 ");
+        assert_eq!(buffer.row_text(1), "row 3 ");
+    }
+
+    #[test]
+    fn a_shifted_canvas_is_still_confined_to_its_parent() {
+        // The containment guarantee has to survive the one sub-canvas that is allowed to be
+        // bigger than its region, or a scrolled panel could scribble on the rest of the screen.
+        let mut buffer = canvas_of(10, 5);
+        draw(&mut buffer, |canvas| {
+            let mut middle = canvas.sub(Rect::new(2, 2, 4, 1));
+            let mut inner = middle.shifted(0, -1, 4, 9);
+            for row in 0..9 {
+                inner.run(0, row, '#', 4, Role::Text);
+            }
+            inner.text(-4, 1, "left");
+        });
+        assert_eq!(buffer.row_text(1), "          ", "nothing above the region");
+        assert_eq!(buffer.row_text(2), "  ####    ");
+        assert_eq!(buffer.row_text(3), "          ", "nothing below it either");
+    }
+
+    #[test]
+    fn a_shifted_canvas_scrolled_past_its_content_shows_nothing_rather_than_panicking() {
+        let mut buffer = canvas_of(6, 2);
+        draw(&mut buffer, |canvas| {
+            let mut inner = canvas.shifted(0, -99, 6, 3);
+            inner.text(0, 0, "gone");
+        });
+        assert_eq!(buffer.row_text(0), "      ");
     }
 
     #[test]

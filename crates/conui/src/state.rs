@@ -193,6 +193,154 @@ impl Selection {
     }
 }
 
+// ---- Viewport ---------------------------------------------------------------------------
+
+/// How far a scrolled region has been scrolled.
+///
+/// The counterpart to [`Selection`], for the case where there is no selection: a pane of text, a
+/// log, a form longer than its panel. Here the offset genuinely is the state — nothing else owns a
+/// cursor for it to follow — which is why this is the one thing in conui with an offset you move
+/// directly, and why a mouse wheel over a [`Scroll`](crate::view::Scroll) does what a wheel
+/// normally does instead of moving a highlight.
+///
+/// The bounds are not yours to restate. How many rows are visible depends on the region layout
+/// hands the viewport, and how many rows exist depends on the content, so both are only knowable
+/// during the draw: [`Viewport::window`] records them, and every method here clamps against what
+/// the last frame actually showed. Scroll it wherever you like between frames; it cannot end up
+/// past the end.
+#[derive(Debug, Default)]
+pub struct Viewport {
+    /// First visible row of the content.
+    offset: Cell<u16>,
+    /// The visible height and the content height, as of the last draw. Interior mutability for
+    /// the same reason [`Selection::offset`] needs it.
+    height: Cell<u16>,
+    content: Cell<u16>,
+}
+
+impl Clone for Viewport {
+    fn clone(&self) -> Self {
+        Self {
+            offset: Cell::new(self.offset.get()),
+            height: Cell::new(self.height.get()),
+            content: Cell::new(self.content.get()),
+        }
+    }
+}
+
+impl Viewport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A viewport already scrolled to a row. Clamped at the next draw if the content is shorter.
+    pub fn at(row: u16) -> Self {
+        Self { offset: Cell::new(row), ..Self::default() }
+    }
+
+    /// The first visible row of the content.
+    pub fn offset(&self) -> u16 {
+        self.offset.get()
+    }
+
+    /// Rows of content that the region could not show, as of the last draw. Zero when it all fits.
+    pub fn overflow(&self) -> u16 {
+        self.content.get().saturating_sub(self.height.get())
+    }
+
+    /// Visible rows, as of the last draw.
+    pub fn height(&self) -> u16 {
+        self.height.get()
+    }
+
+    /// Rows of content, as of the last draw.
+    pub fn content(&self) -> u16 {
+        self.content.get()
+    }
+
+    pub fn is_at_top(&self) -> bool {
+        self.offset.get() == 0
+    }
+
+    pub fn is_at_bottom(&self) -> bool {
+        self.offset.get() >= self.overflow()
+    }
+
+    /// Whether anything is out of sight in either direction — whether a scrollbar has anything to
+    /// say, and whether the keys that scroll are worth putting in the legend.
+    pub fn is_scrollable(&self) -> bool {
+        self.overflow() > 0
+    }
+
+    /// Jump to a row, clamped to what the last draw could show.
+    pub fn set_offset(&self, row: u16) {
+        self.offset.set(row.min(self.limit()));
+    }
+
+    /// The furthest the offset may go, or unbounded before the first draw has said.
+    ///
+    /// Scrolling before anything has been drawn is legitimate — restoring a saved position, opening
+    /// at a line named on the command line — and the alternative is silently doing nothing until the
+    /// second frame, which is the kind of bug that gets blamed on the terminal. [`Viewport::window`]
+    /// clamps either way, so nothing can survive to the screen out of range.
+    fn limit(&self) -> u16 {
+        if self.height.get() == 0 { u16::MAX } else { self.overflow() }
+    }
+
+    /// Move by `delta` rows, negative up. What a mouse wheel does.
+    pub fn scroll(&self, delta: i32) {
+        let row = i64::from(self.offset.get()) + i64::from(delta);
+        self.set_offset(row.clamp(0, i64::from(u16::MAX)) as u16);
+    }
+
+    /// Up or down by a windowful, less one row of overlap so the eye has something to land on.
+    pub fn page_up(&self) {
+        self.scroll(-i32::from(self.page()));
+    }
+
+    pub fn page_down(&self) {
+        self.scroll(i32::from(self.page()));
+    }
+
+    fn page(&self) -> u16 {
+        self.height.get().saturating_sub(1).max(1)
+    }
+
+    pub fn top(&self) {
+        self.offset.set(0);
+    }
+
+    pub fn bottom(&self) {
+        self.offset.set(self.limit());
+    }
+
+    /// Scroll the least that brings content row `row` into view, and no further.
+    ///
+    /// For following something the user did not scroll to themselves — a search hit, a new line in
+    /// a log, the field an error is attached to. Jumping further than needed loses their place.
+    pub fn reveal(&self, row: u16) {
+        let (offset, height) = (self.offset.get(), self.height.get());
+        if row < offset {
+            self.set_offset(row);
+        } else if height > 0 && row >= offset + height {
+            self.set_offset(row + 1 - height);
+        }
+    }
+
+    /// Record the geometry of a draw and return the offset to draw at.
+    ///
+    /// Called by [`Scroll`](crate::view::Scroll), not by you. Clamps as it goes, so a viewport left
+    /// scrolled to the bottom of a long document shows the *end* of a short one rather than nothing
+    /// at all — the failure mode of a stale offset is a blank pane, which reads as a broken program.
+    pub fn window(&self, height: u16, content: u16) -> u16 {
+        self.height.set(height);
+        self.content.set(content);
+        let offset = self.offset.get().min(content.saturating_sub(height));
+        self.offset.set(offset);
+        offset
+    }
+}
+
 // ---- Editor -----------------------------------------------------------------------------
 
 /// A single line of editable text and a cursor within it.
@@ -1004,6 +1152,93 @@ mod tests {
         assert_eq!(selection.selected(), 14);
         selection.page_up(100);
         assert_eq!(selection.selected(), 0);
+    }
+
+    // ---- Viewport -----------------------------------------------------------------------
+
+    /// Stand in for a draw: what `Scroll` does before anything is scrolled.
+    fn drawn(viewport: &Viewport, height: u16, content: u16) -> u16 {
+        viewport.window(height, content)
+    }
+
+    #[test]
+    fn a_viewport_scrolls_within_what_the_last_draw_could_show() {
+        let viewport = Viewport::new();
+        drawn(&viewport, 10, 30);
+        assert_eq!(viewport.overflow(), 20);
+        viewport.scroll(5);
+        assert_eq!(viewport.offset(), 5);
+        viewport.scroll(-99);
+        assert_eq!(viewport.offset(), 0, "no underflow past the top");
+        viewport.scroll(9_999);
+        assert_eq!(viewport.offset(), 20, "and no scrolling past the end");
+        assert!(viewport.is_at_bottom());
+    }
+
+    #[test]
+    fn a_viewport_with_room_to_spare_has_nothing_to_scroll() {
+        let viewport = Viewport::new();
+        drawn(&viewport, 10, 4);
+        assert!(!viewport.is_scrollable());
+        viewport.scroll(3);
+        assert_eq!(viewport.offset(), 0);
+        assert!(viewport.is_at_top() && viewport.is_at_bottom());
+    }
+
+    #[test]
+    fn scrolling_before_the_first_draw_is_kept_and_clamped_when_it_happens() {
+        // The trap this avoids: a position restored at startup silently doing nothing, because
+        // nothing has been drawn yet and so the bounds read as zero.
+        let viewport = Viewport::at(12);
+        assert_eq!(viewport.offset(), 12);
+        viewport.bottom();
+        assert_eq!(drawn(&viewport, 5, 9), 4, "clamped to the end of the real content");
+        assert_eq!(viewport.offset(), 4);
+    }
+
+    #[test]
+    fn a_stale_offset_shows_the_end_of_shorter_content_not_a_blank_pane() {
+        let viewport = Viewport::new();
+        drawn(&viewport, 5, 100);
+        viewport.bottom();
+        assert_eq!(viewport.offset(), 95);
+        // The document was replaced by a much shorter one.
+        assert_eq!(drawn(&viewport, 5, 8), 3);
+    }
+
+    #[test]
+    fn a_page_is_a_windowful_less_one_row_of_overlap() {
+        let viewport = Viewport::new();
+        drawn(&viewport, 10, 100);
+        viewport.page_down();
+        assert_eq!(viewport.offset(), 9, "one row carries over so the eye can land");
+        viewport.page_down();
+        assert_eq!(viewport.offset(), 18);
+        viewport.page_up();
+        assert_eq!(viewport.offset(), 9);
+        viewport.top();
+        assert_eq!(viewport.offset(), 0);
+    }
+
+    #[test]
+    fn a_one_row_viewport_still_pages() {
+        // `height - 1` is zero here, and a page of zero rows would hang the user pressing PageDown.
+        let viewport = Viewport::new();
+        drawn(&viewport, 1, 10);
+        viewport.page_down();
+        assert_eq!(viewport.offset(), 1);
+    }
+
+    #[test]
+    fn revealing_a_row_scrolls_the_least_that_brings_it_into_view() {
+        let viewport = Viewport::new();
+        drawn(&viewport, 10, 100);
+        viewport.reveal(5);
+        assert_eq!(viewport.offset(), 0, "already visible, so nothing moves");
+        viewport.reveal(14);
+        assert_eq!(viewport.offset(), 5, "just far enough that row 14 is the last one");
+        viewport.reveal(3);
+        assert_eq!(viewport.offset(), 3, "and back up to the row itself");
     }
 
     // ---- Editor -------------------------------------------------------------------------

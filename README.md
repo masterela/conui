@@ -62,7 +62,7 @@ of views over a list you can scroll, filter and edit:
    │ › ✓ port the laya snake UI                       │  █ █ █ █ ▀▀█  █ █ █ █ ▀▀█
    │   ✓ ship List and Input                          │  ▀▀▀ ▀▀▀ ▀▀▀  ▀▀▀ ▀▀▀ ▀▀▀
    │   · verify the windows backend on windows        │  PROGRESS  █████░░░░░ 50%
-   │   · write a scroll viewport                      │  TOTAL    6
+   │   · set up CI for linux and windows              │  TOTAL    6
    │   · publish 0.1 to crates.io                     │  SHOWN    6
    │                                                  │  FILE     —
    └──────────────────────────────────────────────────┘  6 loaded
@@ -112,8 +112,10 @@ cargo run -p conui --example settings
 Applying a theme re-themes the live app; the `PREVIEW` panel shows the *draft* palette before you
 commit to it, which a `Role` cannot express and a `Paint` closure can. The whole screen works with
 the mouse too: click a tab, a field or a button, click a select to open it, click an option to choose
-it, click anywhere else to dismiss it. `--dump` takes `--open` and `--tab N` so any state of it can
-be printed as text, which is how most of its tests assert on the layout.
+it, click anywhere else to dismiss it. The `ABOUT` tab holds more text than fits and scrolls — with
+the wheel, the arrows, `PAGE UP`/`PAGE DOWN`, `HOME` and `END` — while the buttons below it stay put.
+`--dump` takes `--open` and `--tab N` so any state of it can be printed as text, which is how most of
+its tests assert on the layout.
 
 ## Quick start
 
@@ -194,10 +196,10 @@ fn place(canvas: &mut Canvas<'_>, x: u16, y: u16, w: u16, h: u16, view: &dyn Vie
 
 | | |
 |---|---|
-| Layout | `Constraint::{Length, Percentage, Ratio, Min, Max, Fill}`, `Row`, `Column`, `Spacer`, `Padded`, `centered` |
-| Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Input`, `Button`, `Tabs`, `Select`, `Menu` |
-| State | `Selection` (cursor + its own scroll offset), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed), `Hits<T>` (where each control landed) |
-| Combinators | `.flex`, `.length`, `.percent`, `.ratio`, `.at_least`, `.at_most`, `.padded`, `.hit` |
+| Layout | `Constraint::{Length, Percentage, Ratio, Min, Max, Fill}`, `Row`, `Column`, `Spacer`, `Padded`, `Scroll`, `centered` |
+| Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Input`, `Button`, `Tabs`, `Select`, `Menu`, `Scrollbar` |
+| State | `Selection` (cursor + its own scroll offset), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed), `Hits<T>` (where each control landed), `Viewport` (how far a pane with no cursor has been scrolled) |
+| Combinators | `.flex`, `.length`, `.percent`, `.ratio`, `.at_least`, `.at_most`, `.padded`, `.hit`, `.fit` |
 | Escapes | `Paint(closure)`, `When`, and the raw `Canvas` |
 | Themes | `Theme::LAYA` (default), `Theme::EMBER`, `Theme::INHERIT`; nine semantic `Role`s |
 
@@ -417,10 +419,69 @@ it twice. Both examples extract the control into a method — `Ui::tab_bar()`, `
 that compose and the click handler both call, because two constructions drift, and the drift shows
 up as clicks landing on the wrong thing.
 
-There is still no general scroll viewport: a `List` scrolls itself, but an arbitrary subtree taller
-than its region is clipped, not scrolled. That is also why the wheel over a list moves the cursor
-rather than a window of its own — `Selection::window` always contains the selection, so an offset
-nudged on its own would be pulled straight back by the next draw.
+### Scrolling is a shifted origin, not a re-layout
+
+A `List` has always scrolled itself: `Selection` carries the offset, and `List` slides it during
+render because the region height is only known then. An arbitrary subtree is the harder case, and the
+answer is not to lay it out smaller. It is drawn *in full*, from an origin above the top of the
+visible region, and clipped:
+
+```rust
+use conui::view::{Column, Scroll};
+use conui::widget::Text;
+use conui::{Buffer, Frame, Rect, Theme, Viewport};
+
+// The offset is the state here, and nothing else owns it.
+let viewport = Viewport::at(2);
+
+let lines = Column::new()
+    .child(Text::new("alpha"))
+    .child(Text::new("bravo"))
+    .child(Text::new("charlie"))
+    .child(Text::new("delta"))
+    .child(Text::new("echo"))
+    // The opt-in: add the children up and ask for that, instead of stretching to the parent.
+    .fit();
+
+let mut buffer = Buffer::new(12, 3);
+let mut frame = Frame::new(&mut buffer, Theme::LAYA);
+frame.render(&Scroll::new(&viewport, lines).bare(), Rect::sized(12, 3));
+
+assert!(buffer.row_text(0).starts_with("charlie"));
+// The draw is the only thing that learned the pane was three rows and the text five.
+assert_eq!(viewport.overflow(), 2);
+assert!(viewport.is_at_bottom());
+```
+
+Underneath is `Canvas::shifted(x, y, width, height)`: a nested canvas at a *signed* offset whose
+region may be **larger** than its parent's. `shifted(0, -2, w, 5)` hands the content all five of its
+rows starting two above the window, and the clip — intersected with the parent's in signed space, so
+containment still holds — throws away what is out of sight. Nothing is re-laid-out, and the content
+cannot tell it is half off screen.
+
+What makes that possible is content that can state a height. `Scroll` reads the child's
+`constraint()`: `Length(n)` means *n* rows to scroll through, and anything elastic means "I adapt to
+whatever region I am given" — which is exactly a thing with nothing to scroll. `Row::fit()` and
+`Column::fit()` are the opt-in, and a fitted stack only adds up if every child is measurable; one
+`Fill` inside and it goes back to asking for a share, because a share of the parent is not a height.
+
+Bounds belong to the draw. `Viewport::window(height, content)` is called during render, and it is the
+only thing that knows either number, so every method clamps against what the last frame actually
+showed: `scroll`, `page_up`/`page_down`, `top`/`bottom`, `reveal(row)`, and `set_offset` for restoring
+a position you saved. That last one is kept as asked until the first draw — the one moment when
+nothing is known yet — and a pane that outgrows its offset shows the end of the text rather than blank
+rows below it.
+
+This is also why the wheel over a `List` moves the *cursor* instead of a window: `Selection::window`
+always scrolls to contain the selection, so an offset nudged on its own is pulled straight back by the
+next draw. A `Viewport`'s offset is owned by nothing else, which is what lets a wheel over the
+settings demo's `ABOUT` pane behave like a wheel.
+
+`Scrollbar` is the indicator, and `Scroll` puts one in its last column unless you ask for `.bare()`.
+It reserves that column before the content is laid out rather than painting over the text afterwards,
+draws nothing at all when everything fits — a permanently full bar trains the eye to stop seeing it —
+and never shows the thumb at an end it has not reached, because a bar that looks finished with a row
+still to read is worse than no bar.
 
 ## The crates
 
@@ -462,16 +523,16 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace                  # 370 unit tests + 17 doctests
+cargo test --workspace                  # 396 unit tests + 18 doctests
 cargo test -p conui --example todo      # 26 more: the example tests itself
-cargo test -p conui --example settings  # 24 more
+cargo test -p conui --example settings  # 35 more
 cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
 cargo fmt --all                         # rustfmt.toml pins use_small_heuristics = "Max"
 ```
 
-Test counts by crate: `conui` 233, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
+Test counts by crate: `conui` 259, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what
