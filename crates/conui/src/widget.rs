@@ -8,11 +8,13 @@
 //! borrows one of the plain structs in [`crate::state`] for the frame, and a widget that can be
 //! focused is *told* so with `.focused(bool)` rather than asking a registry.
 
+use std::ops::Range;
+
 use conui_cell::{Padding, Rect, Style};
 
 use crate::canvas::{Canvas, text_width};
 use crate::layout::Constraint;
-use crate::state::{Dropdown, Editor, Selection};
+use crate::state::{Dropdown, Editor, Selection, Viewport};
 use crate::theme::Role;
 use crate::typography::{self, BarStyle, DIGIT_HEIGHT, line, mark};
 use crate::view::{Stack, View};
@@ -1023,6 +1025,25 @@ impl Scrollbar {
         Self { offset, content, role: Role::Muted, track_role: Role::Dim }
     }
 
+    /// A bar for a viewport, taking its numbers from the last draw.
+    ///
+    /// What a mouse handler wants: the bar the user is pointing at is the one that was *drawn*, and
+    /// a [`Viewport`] remembers the offset and content height it was drawn with.
+    ///
+    /// ```
+    /// use conui::widget::Scrollbar;
+    /// use conui::Viewport;
+    ///
+    /// let viewport = Viewport::new();
+    /// viewport.window(10, 40); // Drawn: ten rows of forty.
+    /// viewport.bottom();
+    /// // Three of the ten rows, pinned to the bottom because that is where the offset is.
+    /// assert_eq!(Scrollbar::of(&viewport).thumb(10), Some(7..10));
+    /// ```
+    pub fn of(viewport: &Viewport) -> Self {
+        Self::new(usize::from(viewport.offset()), usize::from(viewport.content()))
+    }
+
     /// The thumb's colour.
     pub fn role(mut self, role: Role) -> Self {
         self.role = role;
@@ -1034,12 +1055,46 @@ impl Scrollbar {
         self
     }
 
-    /// Thumb length and its top row, for a bar `height` rows tall. `None` when it all fits.
+    /// The rows the thumb covers in a bar `height` rows tall. `None` when it all fits.
     ///
     /// Two properties matter more than proportionality: the thumb is never shorter than one row, so
     /// a long document does not lose it entirely, and it touches the top only at the top and the
     /// bottom only at the bottom — a bar that looks finished with two rows left to read is a lie.
-    fn thumb(&self, height: u16) -> Option<(u16, u16)> {
+    ///
+    /// Public because a bar you can drag needs to know where its own thumb is, and answering that
+    /// is the widget's business rather than the caller's: `thumb(height).contains(&row)` is how a
+    /// press decides whether it grabbed the thumb or hit the track beside it.
+    pub fn thumb(&self, height: u16) -> Option<Range<u16>> {
+        self.thumb_at(self.offset, height)
+    }
+
+    /// Which content offset draws the thumb with its top at `top`. The inverse of [`Scrollbar::thumb`].
+    ///
+    /// What dragging the thumb means: the pointer names a row, and the content has to follow. The
+    /// answer is found by *asking* [`Scrollbar::thumb`] — a binary search over offsets, since the
+    /// thumb only ever moves down as the offset grows — rather than by inverting its arithmetic in a
+    /// second place, which is how a thumb comes to jump out from under the pointer as you drag it.
+    ///
+    /// The lowest offset that reaches `top`, so the guarantee runs one way: the offset this returns
+    /// draws the thumb exactly where it was asked for. Going the other way cannot be promised, and
+    /// nor should it be — a track forty rows long has more offsets than places to put them.
+    pub fn offset_at(&self, top: u16, height: u16) -> usize {
+        let furthest = self.content.saturating_sub(usize::from(height));
+        let (mut low, mut high) = (0usize, furthest);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match self.thumb_at(middle, height) {
+                Some(thumb) if thumb.start < top => low = middle + 1,
+                // Nothing overflows, so there is nowhere to scroll to and no bar to have dragged.
+                None => return 0,
+                Some(_) => high = middle,
+            }
+        }
+        low
+    }
+
+    /// [`Scrollbar::thumb`] for an offset other than this bar's own, which the search above needs.
+    fn thumb_at(&self, offset: usize, height: u16) -> Option<Range<u16>> {
         if height == 0 || self.content <= usize::from(height) {
             return None;
         }
@@ -1047,7 +1102,7 @@ impl Scrollbar {
         let length = ((rows * rows + content / 2) / content).clamp(1, rows);
         let travel = rows - length;
         let furthest = content - rows;
-        let offset = self.offset.min(furthest);
+        let offset = offset.min(furthest);
         // Interior offsets are mapped to interior positions rather than rounded to the nearest
         // row, which is what keeps both ends honest: any rounding at all would let a thumb touch
         // the bottom with a row still to read, and then the bar is worse than nothing.
@@ -1061,19 +1116,19 @@ impl Scrollbar {
             // divide by and belongs at the first interior row regardless.
             _ => 1 + (offset - 1) * (travel - 2) / (furthest - 2).max(1),
         };
-        Some((length as u16, top as u16))
+        Some(top as u16..(top + length) as u16)
     }
 }
 
 impl View for Scrollbar {
     fn render(&self, canvas: &mut Canvas<'_>) {
         let height = canvas.height();
-        let Some((length, top)) = self.thumb(height) else { return };
+        let Some(thumb) = self.thumb(height) else { return };
         for row in 0..i32::from(height) {
             canvas.put(0, row, &line::VERTICAL.to_string(), self.track_role);
         }
-        for row in 0..i32::from(length) {
-            canvas.put(0, i32::from(top) + row, "█", self.role);
+        for row in thumb {
+            canvas.put(0, i32::from(row), "█", self.role);
         }
     }
 }
@@ -1972,9 +2027,10 @@ mod tests {
             for height in 1..16u16 {
                 let furthest = content.saturating_sub(usize::from(height));
                 for offset in 0..=furthest {
-                    let Some((length, top)) = Scrollbar::new(offset, content).thumb(height) else {
+                    let Some(thumb) = Scrollbar::new(offset, content).thumb(height) else {
                         continue;
                     };
+                    let (top, length) = (thumb.start, thumb.end - thumb.start);
                     let travel = height - length;
                     let at = format!("content {content} in {height} rows at {offset}");
                     assert!(length >= 1, "the thumb must stay findable: {at}");
@@ -2015,6 +2071,51 @@ mod tests {
     #[test]
     fn a_scrollbar_past_the_end_pins_to_the_bottom_rather_than_running_off_it() {
         assert_eq!(bar(9_999, 20, 10), "│││││█████");
+    }
+
+    #[test]
+    fn dragging_the_thumb_to_where_it_already_is_scrolls_nothing() {
+        // The property a drag lives or dies by: the thumb must not shift under the pointer. The
+        // offset may change — several offsets can share a row — but the drawn bar may not.
+        for content in 2..60usize {
+            for height in 1..16u16 {
+                for offset in 0..=content {
+                    let bar = Scrollbar::new(offset, content);
+                    let Some(thumb) = bar.thumb(height) else { continue };
+                    let landed = Scrollbar::new(bar.offset_at(thumb.start, height), content);
+                    assert_eq!(
+                        landed.thumb(height),
+                        Some(thumb),
+                        "content {content} in {height} rows at {offset}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_the_thumb_to_an_end_reaches_that_end_exactly() {
+        let bar = Scrollbar::new(0, 40);
+        assert_eq!(bar.offset_at(0, 10), 0);
+        assert_eq!(bar.offset_at(7, 10), 30, "the last row of travel is the last row of content");
+        assert_eq!(bar.offset_at(9, 10), 30, "and dragging past it stays there");
+    }
+
+    #[test]
+    fn dragging_a_bar_with_nothing_to_scroll_goes_nowhere() {
+        assert_eq!(Scrollbar::new(0, 4).offset_at(3, 10), 0);
+    }
+
+    #[test]
+    fn a_dragged_thumb_covers_the_whole_track_over_a_long_document() {
+        // One row of thumb and ten of track: every row of the bar must be reachable by dragging to
+        // it, and the ends must be the ends, or a long file has parts you can only reach by key.
+        let bar = Scrollbar::new(0, 10_000);
+        let reached: Vec<u16> = (0..10)
+            .map(|row| Scrollbar::new(bar.offset_at(row, 10), 10_000).thumb(10).unwrap().start)
+            .collect();
+        assert_eq!(reached, (0..10).collect::<Vec<_>>());
+        assert_eq!(bar.offset_at(9, 10), 9_990, "the bottom row is the end of the document");
     }
 
     // ---- Input --------------------------------------------------------------------------

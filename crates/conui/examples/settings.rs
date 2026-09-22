@@ -30,7 +30,10 @@
 //! screen is usable with the mouse as well: click a tab, a field or a button, click a dropdown to
 //! open it, click an option to choose it, click anywhere else to dismiss it. Clicking into the text
 //! field puts the caret where you pointed, which needs both halves of a click — the region the
-//! field drew itself in, and how far its text had scrolled when it did.
+//! field drew itself in, and how far its text had scrolled when it did. The ABOUT pane's scrollbar
+//! can be dragged, which is the one gesture that spans several events: the press remembers where in
+//! the thumb it landed, and every drag after it puts the thumb back under the pointer until the
+//! release.
 //!
 //! ```sh
 //! cargo run -p conui --example settings
@@ -42,12 +45,12 @@ use std::io;
 
 use conui::view::{Column, Paint, Row, Scroll, Spacer, ViewExt};
 use conui::widget::{
-    Border, Button, Field, Gauge, Hints, Menu, Panel, Readout, Select, Tabs, Text,
+    Border, Button, Field, Gauge, Hints, Menu, Panel, Readout, Scrollbar, Select, Tabs, Text,
 };
 use conui::widget::{Input, Rule};
 use conui::{
     App, BarStyle, Buffer, Config, Dropdown, Editor, Event, Focus, Frame, Hits, KeyCode, KeyEvent,
-    MouseEvent, Pos, Rect, Role, Selection, Style, Theme, View, Viewport,
+    MouseButton, MouseEvent, MouseKind, Pos, Rect, Role, Selection, Style, Theme, View, Viewport,
 };
 
 const MIN_WIDTH: u16 = 66;
@@ -325,6 +328,14 @@ struct Ui {
     /// has closed.
     found: Option<u16>,
     needle: String,
+    /// Rows between the press that grabbed the ABOUT scrollbar's thumb and the thumb's top, or
+    /// `None` when no drag is in progress.
+    ///
+    /// A drag is the one gesture that spans events, so something has to remember it, and that
+    /// something is the app: a [`Scrollbar`] is a value rebuilt every frame and could not hold it
+    /// if it wanted to. Storing the *grab* rather than the offset is what makes the thumb move with
+    /// the pointer instead of jumping its middle under it.
+    grab: Option<u16>,
     /// The last applied values, for the dirty marker and for Revert.
     saved: Values,
     status: String,
@@ -358,6 +369,7 @@ impl Ui {
             finding: false,
             found: None,
             needle: String::new(),
+            grab: None,
             saved,
             status: String::from("ready"),
             status_role: Role::Muted,
@@ -698,6 +710,19 @@ impl Ui {
             }
             return Flow::Continue;
         }
+        // A drag belongs to whatever the press grabbed, not to whatever is under the pointer now.
+        // The thumb is one column wide and the hand wanders: a bar that let go the moment the
+        // pointer left it would be unusable, so the grab decides, and the release ends it.
+        if let MouseKind::Drag(MouseButton::Left) = mouse.kind {
+            if let Some(grab) = self.grab {
+                self.drag_thumb(at, grab);
+            }
+            return Flow::Continue;
+        }
+        if let MouseKind::Up(MouseButton::Left) = mouse.kind {
+            self.grab = None;
+            return Flow::Continue;
+        }
         if !mouse.is_click() {
             return Flow::Continue;
         }
@@ -732,8 +757,7 @@ impl Ui {
                     self.label.set_cursor_column(hidden + local.x);
                 }
             }
-            // Focus only, so the arrow keys carry on scrolling from where the wheel stopped.
-            Id::About => {}
+            Id::About => self.press_about(at),
             Id::Revert => self.revert(),
             Id::Apply => return self.apply(),
             select => {
@@ -747,6 +771,47 @@ impl Ui {
             }
         }
         Flow::Continue
+    }
+
+    /// Which row of the ABOUT pane's scrollbar `at` is on, if it is on the bar at all.
+    ///
+    /// The pane is one hit region and the bar is its last column — the same column [`Scroll`] took
+    /// away from the text in order to draw it. There is no bar to hit when nothing overflows, which
+    /// is also when `Scroll` draws none.
+    fn about_bar_row(&self, at: Pos) -> Option<u16> {
+        let area = self.hits.area_of(Id::About)?;
+        let on_bar = self.about.is_scrollable() && at.x + 1 == area.x + area.width;
+        on_bar.then(|| at.y - area.y)
+    }
+
+    /// A press in the ABOUT pane: grab the thumb, or page the track beside it.
+    ///
+    /// Paging rather than jumping, because the track is where you press when you want *more* of what
+    /// you are reading, not to be thrown somewhere else in it. A press in the text is focus only, so
+    /// the arrow keys carry on scrolling from wherever the wheel stopped.
+    fn press_about(&mut self, at: Pos) {
+        let Some(row) = self.about_bar_row(at) else { return };
+        let Some(thumb) = Scrollbar::of(&self.about).thumb(self.about.height()) else { return };
+        if thumb.contains(&row) {
+            self.grab = Some(row - thumb.start);
+        } else if row < thumb.start {
+            self.about.page_up();
+        } else {
+            self.about.page_down();
+        }
+    }
+
+    /// Drag the ABOUT pane's thumb so that it goes on sitting `grab` rows below the pointer.
+    ///
+    /// The row is clamped to the bar rather than discarded: overshooting the end of a bar and having
+    /// it stop responding is the kind of thing that gets called sticky, and the fix is to read a
+    /// pointer past the end as a request for the end.
+    fn drag_thumb(&self, at: Pos, grab: u16) {
+        let Some(area) = self.hits.area_of(Id::About) else { return };
+        let height = self.about.height();
+        let row = at.y.clamp(area.y, area.y + height.saturating_sub(1)) - area.y;
+        let offset = Scrollbar::of(&self.about).offset_at(row.saturating_sub(grab), height);
+        self.about.set_offset(u16::try_from(offset).unwrap_or(u16::MAX));
     }
 
     // ---- Drawing -----------------------------------------------------------------------
@@ -1395,6 +1460,114 @@ mod tests {
             row,
             modifiers: conui::Modifiers::NONE,
         }));
+    }
+
+    /// Any mouse event at a position, after a draw. `click_at` is this with a left press.
+    fn mouse_at(ui: &mut Ui, kind: MouseKind, column: u16, row: u16) -> Flow {
+        let _ = screen(ui, 88, 24);
+        ui.handle(&Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: conui::Modifiers::NONE,
+        }))
+    }
+
+    fn drag_to(ui: &mut Ui, column: u16, row: u16) {
+        mouse_at(ui, MouseKind::Drag(MouseButton::Left), column, row);
+    }
+
+    fn release(ui: &mut Ui) {
+        mouse_at(ui, MouseKind::Up(MouseButton::Left), 0, 0);
+    }
+
+    /// The ABOUT pane's scrollbar as drawn: the column it is in, and the screen rows of its thumb.
+    fn about_bar(ui: &Ui) -> (u16, std::ops::Range<u16>) {
+        let pane = ui.hits.area_of(Id::About).expect("the pane drew");
+        let thumb = Scrollbar::of(&ui.about).thumb(ui.about.height()).expect("the bar drew");
+        (pane.x + pane.width - 1, pane.y + thumb.start..pane.y + thumb.end)
+    }
+
+    #[test]
+    fn pressing_the_thumb_grabs_it_without_scrolling_anything() {
+        let mut ui = about_tab();
+        let (column, thumb) = about_bar(&ui);
+        // Three rows down the thumb, which is the interesting case: a bar that recentred the thumb
+        // on the pointer would scroll the text on the press, before the hand had moved at all.
+        click_at(&mut ui, column, thumb.start + 3);
+        assert_eq!(ui.grab, Some(3));
+        assert_eq!(ui.about.offset(), 0, "pressing the thumb scrolled the text");
+        assert_eq!(ui.focus.current(), Some(Id::About), "a press on the bar is still a press");
+    }
+
+    #[test]
+    fn dragging_the_thumb_takes_it_with_the_pointer() {
+        let mut ui = about_tab();
+        let (column, thumb) = about_bar(&ui);
+        click_at(&mut ui, column, thumb.start);
+        drag_to(&mut ui, column, thumb.start + 2);
+        assert!(ui.about.offset() > 0, "the text did not follow the thumb");
+        // The property that makes a drag feel attached: two rows of pointer, two rows of thumb.
+        assert_eq!(about_bar(&ui).1, thumb.start + 2..thumb.end + 2);
+    }
+
+    #[test]
+    fn a_drag_goes_on_following_the_pointer_after_it_leaves_the_bar() {
+        let mut ui = about_tab();
+        let (column, thumb) = about_bar(&ui);
+        click_at(&mut ui, column, thumb.start);
+        // The bar is one column wide and hands wander. The grab decides, not what is underneath.
+        drag_to(&mut ui, 0, thumb.start + 2);
+        assert_eq!(about_bar(&ui).1, thumb.start + 2..thumb.end + 2);
+    }
+
+    #[test]
+    fn dragging_past_the_end_of_the_bar_asks_for_the_end_of_the_text() {
+        let mut ui = about_tab();
+        let (column, thumb) = about_bar(&ui);
+        click_at(&mut ui, column, thumb.start);
+        drag_to(&mut ui, column, 200);
+        assert_eq!(ui.about.offset(), ui.about.overflow());
+        assert!(screen(&ui, 88, 24).contains("HOME and END"), "the last line never came into view");
+        // And back, by the same route.
+        drag_to(&mut ui, column, 0);
+        assert!(ui.about.is_at_top());
+    }
+
+    #[test]
+    fn releasing_the_button_ends_the_drag() {
+        let mut ui = about_tab();
+        let (column, thumb) = about_bar(&ui);
+        click_at(&mut ui, column, thumb.start);
+        drag_to(&mut ui, column, thumb.start + 2);
+        let offset = ui.about.offset();
+        release(&mut ui);
+        assert_eq!(ui.grab, None);
+        drag_to(&mut ui, column, thumb.end + 4);
+        assert_eq!(ui.about.offset(), offset, "the bar was still holding on after the release");
+    }
+
+    #[test]
+    fn a_drag_that_grabbed_nothing_scrolls_nothing() {
+        let mut ui = about_tab();
+        // Moving across the pane with a button held, having pressed somewhere else entirely.
+        drag_to(&mut ui, 10, 10);
+        assert_eq!(ui.about.offset(), 0);
+        assert_eq!(ui.grab, None);
+    }
+
+    #[test]
+    fn pressing_the_track_pages_towards_where_you_pressed() {
+        let mut ui = about_tab();
+        let (column, thumb) = about_bar(&ui);
+        click_at(&mut ui, column, thumb.end + 1);
+        let page = ui.about.height() - 1;
+        assert_eq!(ui.about.offset(), page, "a press below the thumb should page, not jump");
+        assert_eq!(ui.grab, None, "the track is not the thumb");
+
+        let (column, thumb) = about_bar(&ui);
+        click_at(&mut ui, column, thumb.start - 1);
+        assert!(ui.about.is_at_top());
     }
 
     #[test]
