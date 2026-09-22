@@ -51,6 +51,11 @@ cargo run -p conui --example snake
 `--dump [steps]` prints one composed frame as plain text and exits, which is how the layout above
 was checked without a terminal.
 
+Nothing on that screen is decorative, and 35 tests hold it to that. The snake's safety shield really
+does keep it alive until the board is full — three seeds, played out to a win in the test — and with
+the shield switched off the same policy dies in about thirty moves, which is the comparison the
+panel is there to show you.
+
 The second demo is the same toolkit used the other way round — no coordinates anywhere, just a tree
 of views over a list you can scroll, filter and edit:
 
@@ -524,7 +529,8 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 
 ```sh
 cargo test --workspace                  # 396 unit tests + 18 doctests
-cargo test -p conui --example todo      # 26 more: the example tests itself
+cargo test -p conui --example snake     # 35 more: the example tests itself
+cargo test -p conui --example todo      # 26 more
 cargo test -p conui --example settings  # 35 more
 cargo run -p conui --example snake
 cargo run -p conui --example todo
