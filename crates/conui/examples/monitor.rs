@@ -46,7 +46,8 @@ use std::time::{Duration, Instant};
 use conui::state::{Editor, Selection};
 use conui::view::{Column, Row, Spacer, View, ViewExt};
 use conui::widget::{
-    Field, Gauge, Hints, Input, List, ListRow, Panel, Readout, Rule, Scrollbar, Sparkline, Text,
+    Field, Gauge, Hints, Input, Panel, Readout, Rule, Scrollbar, Sparkline, Table, TableColumn,
+    TableHit, TableRow, Text,
 };
 use conui::{
     App, BarStyle, Buffer, Config, Event, Frame, Hits, KeyCode, KeyEvent, MouseButton, MouseEvent,
@@ -71,11 +72,24 @@ const REFRESH: Duration = Duration::from_millis(1000);
 /// window simply reaches further back.
 const HISTORY: usize = 140;
 
-/// The table's fixed columns. Heading and rows are formatted from these same three numbers, so a
-/// heading cannot come to sit over the wrong column.
-const PID_WIDTH: usize = 7;
-const CPU_WIDTH: usize = 6;
-const MEM_WIDTH: usize = 9;
+/// The process table, in the order its columns are drawn: what each is called, how wide it is, and
+/// what clicking its heading sorts by.
+///
+/// One list rather than three, which is the whole reason [`Table`] exists. This used to be three
+/// width constants, a `format!` for the heading, the same `format!` again for a row, and a fourth
+/// copy of the boundaries to work out which heading a click had landed on — four places that had to
+/// agree and no way to make them.
+///
+/// `None` for a width means "take whatever is left", which only the last column can usefully be. A
+/// *stated* width is what a column of figures wants — its width comes from the widest number it will
+/// ever hold rather than from the window — and figures are read against their right edge, so the two
+/// go together and [`columns`] puts them together.
+const COLUMNS: [(&str, Option<u16>, Order); 4] = [
+    ("PID", Some(7), Order::Pid),
+    ("CPU%", Some(6), Order::Cpu),
+    ("MEM", Some(9), Order::Memory),
+    ("COMMAND", None, Order::Name),
+];
 
 /// What a figure the platform would not give prints as.
 const UNKNOWN: &str = "—";
@@ -268,32 +282,34 @@ fn meter<'a>(
         )
 }
 
-/// The process table: a heading over a list, with a bar down the right when it overflows.
+/// The process table, with a bar down the right when it overflows.
+///
+/// One hit region, where there used to be two: the heading was a separate view so that a click on it
+/// could be told apart from a click on a row, and [`Table::hit_at`] tells them apart from inside the
+/// widget instead. There is nothing here that knows how wide the cursor gutter is or where the MEM
+/// column ends, which is the point.
 fn table(monitor: &Monitor) -> impl View + '_ {
-    let list = monitor.process_list();
-    let indent = list.text_column();
-    let shown = list.len();
-    let title = format!(
-        "PROCESSES · {} {}",
-        monitor.order.label(),
-        if monitor.descending { "↓" } else { "↑" }
-    );
-    // The heading is a child rather than the panel's subtitle so that it can carry a hit region of
-    // its own: which column was clicked is the only question it answers, and the panel's title row
-    // must not answer it too.
-    let columns = format!("{}{}", " ".repeat(usize::from(indent)), table_heading());
+    let shown = monitor.process_table().len();
 
-    Panel::new(title)
-        .child(Text::new(columns).muted().hit(&monitor.hits, Zone::Heading).length(1))
-        .child(
-            Row::new()
-                .gap(1)
-                .child(list.hit(&monitor.hits, Zone::Table).flex(1))
-                .child(
-                    Scrollbar::new(monitor.selection.offset(), shown).hit(&monitor.hits, Zone::Bar),
-                )
-                .flex(1),
-        )
+    Panel::new("PROCESSES").child(
+        Row::new()
+            .gap(1)
+            .child(monitor.process_table().hit(&monitor.hits, Zone::Table).flex(1))
+            .child(
+                // The bar stands beside the rows and not beside the heading, which the table now
+                // draws itself. A spacer is the honest way to say so: the heading is one row tall
+                // because a heading is one row tall, and the bar starts under it.
+                Column::new()
+                    .child(Spacer::new().length(1))
+                    .child(
+                        Scrollbar::new(monitor.selection.offset(), shown)
+                            .hit(&monitor.hits, Zone::Bar)
+                            .flex(1),
+                    )
+                    .length(1),
+            )
+            .flex(1),
+    )
 }
 
 /// The right-hand column: the machine in four figures, then whatever the cursor is on.
@@ -378,53 +394,17 @@ fn footer(monitor: &Monitor, width: u16) -> Box<dyn View + '_> {
     }
 }
 
-/// The table's column headings, formatted exactly as a row is so the two cannot drift apart.
-fn table_heading() -> String {
-    format!(
-        "{:>pid$} {:>cpu$} {:>mem$}  {}",
-        "PID",
-        "CPU%",
-        "MEM",
-        "COMMAND",
-        pid = PID_WIDTH,
-        cpu = CPU_WIDTH,
-        mem = MEM_WIDTH
-    )
+/// [`COLUMNS`] as the widget wants them.
+fn columns() -> impl Iterator<Item = TableColumn> {
+    COLUMNS.iter().map(|&(heading, width, _)| match width {
+        Some(width) => TableColumn::new(heading).length(width).right(),
+        None => TableColumn::new(heading),
+    })
 }
 
-/// One row of the table, on the same widths as [`table_heading`] and from the same constants.
-fn table_row(process: &Process) -> String {
-    format!(
-        "{:>pid$} {:>cpu$} {:>mem$}  {}",
-        process.pid,
-        cpu_text(process.cpu),
-        bytes(process.memory),
-        process.name,
-        pid = PID_WIDTH,
-        cpu = CPU_WIDTH,
-        mem = MEM_WIDTH
-    )
-}
-
-/// Which column a click `local` columns into the heading landed on.
-///
-/// The heading is one string, so this walks the same widths that formatted it rather than asking a
-/// set of sibling views where they ended up. Past the last boundary is the command, which is what
-/// the eye expects: everything to the right of `MEM` belongs to the name.
-fn column_at(local: u16, indent: u16) -> Order {
-    let x = local.saturating_sub(indent);
-    let pid = PID_WIDTH as u16;
-    let cpu = pid + 1 + CPU_WIDTH as u16;
-    let memory = cpu + 1 + MEM_WIDTH as u16;
-    if x < pid {
-        Order::Pid
-    } else if x < cpu {
-        Order::Cpu
-    } else if x < memory {
-        Order::Memory
-    } else {
-        Order::Name
-    }
+/// Which column carries the sort arrow, as an index into [`COLUMNS`].
+fn sorted_column(order: Order) -> usize {
+    COLUMNS.iter().position(|&(_, _, column)| column == order).unwrap_or(0)
 }
 
 // ---- Formatting -------------------------------------------------------------------------
@@ -519,15 +499,6 @@ enum Order {
 }
 
 impl Order {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Cpu => "CPU",
-            Self::Memory => "MEM",
-            Self::Pid => "PID",
-            Self::Name => "NAME",
-        }
-    }
-
     /// Whether this column reads best largest-first. A name does not; a measurement does, because
     /// the reason to sort by CPU is to find out what is eating it.
     fn descends_by_default(self) -> bool {
@@ -552,10 +523,9 @@ enum Flow {
 /// The parts of the screen a click can land in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Zone {
-    /// The rows, for selecting a process and for the wheel.
+    /// The table, headings included — [`Table::hit_at`] says which of the two a click was, so the
+    /// screen does not need a region per answer.
     Table,
-    /// The column headings, for sorting by one.
-    Heading,
     /// The one column beside the table, for dragging the thumb and paging the track.
     Bar,
 }
@@ -578,7 +548,7 @@ struct Monitor {
     /// [`Monitor::follow`].
     focus: Option<u32>,
     /// Where the cursor is *now*, derived from `focus` every time the list changes. Held rather
-    /// than recomputed on demand because a [`List`] scrolls itself against it, and that scroll
+    /// than recomputed on demand because a [`Table`] scrolls itself against it, and that scroll
     /// position is worth keeping.
     selection: Selection,
     /// How far down the thumb the pointer was when it grabbed it, or `None` when nothing is held.
@@ -724,12 +694,20 @@ impl Monitor {
         self.snapshot.processes.iter().filter(|process| self.matches(process)).nth(index)
     }
 
-    fn process_list(&self) -> List<'_> {
-        let rows: Vec<ListRow> = self
+    /// The table as it is drawn — built here rather than in [`table`] because the click handler
+    /// needs the same one. Two constructions would drift, and the drift would show up as a click
+    /// sorting by the column next to the one under the pointer.
+    fn process_table(&self) -> Table<'_> {
+        let rows: Vec<TableRow> = self
             .visible()
             .into_iter()
             .map(|process| {
-                let row = ListRow::new(table_row(process));
+                let row = TableRow::new([
+                    process.pid.to_string(),
+                    cpu_text(process.cpu),
+                    bytes(process.memory),
+                    process.name.clone(),
+                ]);
                 // Colour is the only thing the table says that its columns do not: a process
                 // taking half a core or more is the one the user came here to find.
                 match process.cpu {
@@ -744,7 +722,11 @@ impl Monitor {
             (false, false) => format!("nothing matching “{}”", self.needle),
             (false, true) => "no processes".to_string(),
         };
-        List::new(rows).selection(&self.selection).empty(empty)
+        Table::new(columns())
+            .rows(rows)
+            .selection(&self.selection)
+            .sorted_by(sorted_column(self.order), self.descending)
+            .empty(empty)
     }
 
     // ---- Events ------------------------------------------------------------------------
@@ -860,7 +842,6 @@ impl Monitor {
             MouseKind::Up(MouseButton::Left) => self.grab = None,
             MouseKind::Down(MouseButton::Left) => match self.hits.at(at) {
                 Some(Zone::Table) => self.press_table(at),
-                Some(Zone::Heading) => self.press_heading(at),
                 Some(Zone::Bar) => self.press_bar(at),
                 None => {}
             },
@@ -878,12 +859,23 @@ impl Monitor {
         }
     }
 
-    /// A click in the table: select the row under the pointer, if there is one.
+    /// A click in the table: sort by the heading under the pointer, or select the row under it.
+    ///
+    /// The whole resolution is one call, because the table is the only thing that knows where its
+    /// columns came out and how far its rows had scrolled. This used to be two handlers on two hit
+    /// regions, one of which re-derived the column boundaries by hand.
     fn press_table(&mut self, at: Pos) {
         let Some(area) = self.hits.area_of(Zone::Table) else { return };
-        let len = self.visible().len();
-        if let Some(row) = self.selection.row_at(area, at, len) {
-            self.select(row);
+        // Resolved before anything is changed, because the answer is about the frame that was drawn.
+        let hit = self.process_table().hit_at(area, at);
+        match hit {
+            Some(TableHit::Heading(column)) => {
+                // `sort_by` answers a key press too, and a key press has to say whether the app
+                // goes on running. A click has nowhere to report that, and nothing to report.
+                let _ = self.sort_by(COLUMNS[column].2);
+            }
+            Some(TableHit::Row(row)) => self.select(row),
+            None => {}
         }
     }
 
@@ -926,15 +918,6 @@ impl Monitor {
             .offset_at(row.saturating_sub(grab), area.height);
         self.selection.scroll_to(offset, len);
         self.remember();
-    }
-
-    /// A click on the column headings: sort by the column clicked.
-    fn press_heading(&mut self, at: Pos) {
-        let Some(local) = self.hits.local(Zone::Heading, at) else { return };
-        // The heading is indented by the list's cursor column, and the list is the only thing that
-        // knows how wide that is.
-        let indent = self.process_list().text_column();
-        self.sort_by(column_at(local.x, indent));
     }
 
     // ---- Fixtures ----------------------------------------------------------------------
@@ -1605,7 +1588,8 @@ mod tests {
         let rendered = screen(&app(), 100, 24);
         assert!(rendered.contains("CONUI  /  MONITOR"));
         assert!(rendered.contains("studio.local · up 4d 02:11"));
-        assert!(rendered.contains("PROCESSES · CPU ↓"));
+        assert!(rendered.contains("PROCESSES"));
+        assert!(rendered.contains("CPU% ↓"), "and the arrow is on the column it sorts by");
         assert!(rendered.contains("COMMAND"), "the column headings are missing");
         assert!(rendered.contains("Q quit"));
     }
@@ -1735,7 +1719,7 @@ mod tests {
         press(&mut monitor, KeyCode::Char('m'));
         assert_eq!(names(&monitor).first().map(String::as_str), Some("kernel_task"));
         assert_eq!(names(&monitor).last().map(String::as_str), Some("fseventsd"));
-        assert!(screen(&monitor, 100, 24).contains("PROCESSES · MEM ↓"));
+        assert!(screen(&monitor, 100, 24).contains("MEM ↓"));
     }
 
     #[test]
@@ -1763,7 +1747,7 @@ mod tests {
         let mut ascending = names(&monitor);
         ascending.reverse();
         assert_eq!(descending, ascending);
-        assert!(screen(&monitor, 100, 24).contains("PROCESSES · MEM ↑"));
+        assert!(screen(&monitor, 100, 24).contains("MEM ↑"));
     }
 
     #[test]
@@ -2151,7 +2135,8 @@ mod tests {
     fn clicking_a_row_selects_that_process() {
         let mut monitor = app();
         let area = area_of(&monitor, Zone::Table);
-        click_at(&mut monitor, area.x + 4, area.y + 3);
+        // Plus one for the heading, which is the table's own first row now.
+        click_at(&mut monitor, area.x + 4, area.y + 4);
         assert_eq!(monitor.selection.selected(), 3);
         assert_eq!(focused(&monitor), Some("rustc"));
         assert_eq!(monitor.focus, Some(4832), "and the pid is what is remembered");
@@ -2169,11 +2154,12 @@ mod tests {
     #[test]
     fn clicking_a_column_heading_sorts_by_it() {
         let mut monitor = app();
-        let area = area_of(&monitor, Zone::Heading);
-        let indent = monitor.process_list().text_column();
-        click_at(&mut monitor, area.x + indent + 1, area.y);
+        let area = area_of(&monitor, Zone::Table);
+        // No indent arithmetic here any more: the table knows where its own columns are, and the
+        // heading is its top row.
+        click_at(&mut monitor, area.x + 1, area.y);
         assert_eq!(monitor.order, Order::Pid, "the leftmost column is PID");
-        click_at(&mut monitor, area.x + indent + PID_WIDTH as u16 + 2, area.y);
+        click_at(&mut monitor, area.x + 12, area.y);
         assert_eq!(monitor.order, Order::Cpu);
         click_at(&mut monitor, area.x + area.width - 2, area.y);
         assert_eq!(monitor.order, Order::Name, "everything right of MEM is the command");
@@ -2182,9 +2168,8 @@ mod tests {
     #[test]
     fn clicking_the_same_heading_twice_turns_the_column_round() {
         let mut monitor = app();
-        let area = area_of(&monitor, Zone::Heading);
-        let indent = monitor.process_list().text_column();
-        let column = area.x + indent + 1;
+        let area = area_of(&monitor, Zone::Table);
+        let column = area.x + 1;
         click_at(&mut monitor, column, area.y);
         assert!(!monitor.descending, "a list of pids starts at the lowest");
         click_at(&mut monitor, column, area.y);
@@ -2401,13 +2386,24 @@ mod tests {
 
     #[test]
     fn a_click_on_the_heading_resolves_to_the_column_under_it() {
-        // The boundaries, which is where an off-by-one would hide.
-        assert_eq!(column_at(2, 2), Order::Pid);
-        assert_eq!(column_at(2 + PID_WIDTH as u16 - 1, 2), Order::Pid);
-        assert_eq!(column_at(2 + PID_WIDTH as u16, 2), Order::Cpu);
-        assert_eq!(column_at(2 + (PID_WIDTH + CPU_WIDTH) as u16 + 1, 2), Order::Memory);
-        assert_eq!(column_at(200, 2), Order::Name);
-        assert_eq!(column_at(0, 2), Order::Pid, "left of the indent is still the first column");
+        // The boundaries, which is where an off-by-one would hide. Two cells of cursor gutter, then
+        // seven of PID, six of CPU%, nine of MEM and the command to the right edge — and the gaps
+        // belong to the column on their left. `Table::hit_at` owns all of that now; this checks the
+        // column list is in the order the screen draws it, which is the part this file can get wrong.
+        let monitor = app();
+        let area = area_of(&monitor, Zone::Table);
+        let column =
+            |x: u16| match monitor.process_table().hit_at(area, Pos::new(area.x + x, area.y)) {
+                Some(TableHit::Heading(column)) => COLUMNS[column].2,
+                other => panic!("the top row of the table is the heading, not {other:?}"),
+            };
+        assert_eq!(column(0), Order::Pid, "the cursor gutter belongs to the first column");
+        assert_eq!(column(8), Order::Pid);
+        assert_eq!(column(10), Order::Cpu);
+        assert_eq!(column(17), Order::Memory);
+        assert_eq!(column(26), Order::Memory, "the gap after MEM is still MEM");
+        assert_eq!(column(27), Order::Name);
+        assert_eq!(column(area.width - 1), Order::Name, "out to the right edge");
     }
 
     // ---- The platform underneath ---------------------------------------------------------
