@@ -207,7 +207,7 @@ fn place(canvas: &mut Canvas<'_>, x: u16, y: u16, w: u16, h: u16, view: &dyn Vie
 |---|---|
 | Layout | `Constraint::{Length, Percentage, Ratio, Min, Max, Fill}`, `Row`, `Column`, `Spacer`, `Padded`, `Scroll`, `centered` |
 | Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Input`, `Button`, `Tabs`, `Select`, `Menu`, `Scrollbar` |
-| State | `Selection` (cursor + its own scroll offset), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed), `Hits<T>` (where each control landed), `Viewport` (how far a pane with no cursor has been scrolled) |
+| State | `Selection` (cursor, its own scroll offset, and the height it was drawn at), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed), `Hits<T>` (where each control landed), `Viewport` (how far a pane with no cursor has been scrolled) |
 | Combinators | `.flex`, `.length`, `.percent`, `.ratio`, `.at_least`, `.at_most`, `.padded`, `.hit`, `.fit` |
 | Escapes | `Paint(closure)`, `When`, and the raw `Canvas` |
 | Themes | `Theme::LAYA` (default), `Theme::EMBER`, `Theme::INHERIT`; nine semantic `Role`s |
@@ -272,7 +272,10 @@ impl Screen {
 ```
 
 `Selection` keeps its own scroll offset, and `List` slides it during render — the region height is
-only known then, so there is no `scroll_into_view` for the caller to forget. `Editor` moves and
+only known then, so there is no `scroll_into_view` for the caller to forget. It keeps that height
+too, which is why `selection.page_up()` takes no page size: the window the list was drawn at is the
+only number that is really a page, and a constant in a key handler is wrong at every size but one.
+`Editor` moves and
 deletes by grapheme cluster, not by byte or `char`, and reports a display *column* for the cursor,
 so an emoji or a combining accent in a field does not desynchronise the caret. `Input` paints its
 own block cursor as a reversed cell rather than parking the terminal cursor, so a field nested six
@@ -545,9 +548,9 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 ## Development
 
 ```sh
-cargo test --workspace                  # 416 unit tests + 20 doctests
+cargo test --workspace                  # 420 unit tests + 20 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
-cargo test -p conui --example todo      # 26 more
+cargo test -p conui --example todo      # 27 more
 cargo test -p conui --example settings  # 55 more
 cargo run -p conui --example snake
 cargo run -p conui --example todo
@@ -569,7 +572,7 @@ with no local compiler to check it. Rustdoc needs no such thing: it reads the sa
 and it runs with `-D warnings` so a dead intra-doc link fails the build rather than waiting to be
 found by a reader.
 
-Test counts by crate: `conui` 279, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
+Test counts by crate: `conui` 283, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what

@@ -47,11 +47,19 @@ pub struct Selection {
     /// Index of the first visible row. Interior mutability because rendering, which takes
     /// `&self`, is the only place the window's height is known.
     offset: Cell<usize>,
+    /// Visible rows, as of the last draw. Recorded for the same reason and used for the same
+    /// thing: so that [`Selection::page_up`] means a page rather than a number the caller had to
+    /// invent.
+    height: Cell<usize>,
 }
 
 impl Clone for Selection {
     fn clone(&self) -> Self {
-        Self { selected: self.selected, offset: Cell::new(self.offset.get()) }
+        Self {
+            selected: self.selected,
+            offset: Cell::new(self.offset.get()),
+            height: Cell::new(self.height.get()),
+        }
     }
 }
 
@@ -62,7 +70,7 @@ impl Selection {
 
     /// A selection starting on a given row.
     pub fn at(index: usize) -> Self {
-        Self { selected: index, offset: Cell::new(0) }
+        Self { selected: index, ..Self::default() }
     }
 
     pub const fn selected(&self) -> usize {
@@ -123,12 +131,31 @@ impl Selection {
         self.selected = len.saturating_sub(1);
     }
 
-    pub fn page_up(&mut self, rows: usize) {
-        self.selected = self.selected.saturating_sub(rows);
+    /// Up a windowful, less one row of overlap so the eye has something to land on.
+    ///
+    /// The page is the height the list was last drawn at, which is the only number that is
+    /// actually a page: it is the region layout handed the list, and nothing outside the draw knows
+    /// it. A caller passing its own row count is guessing, and the guess is wrong the moment the
+    /// window is resized. Before the first draw, and for a selection no list ever drew, a page is
+    /// one row.
+    pub fn page_up(&mut self) {
+        self.selected = self.selected.saturating_sub(self.page());
     }
 
-    pub fn page_down(&mut self, rows: usize, len: usize) {
-        self.selected = (self.selected + rows).min(len.saturating_sub(1));
+    /// Down a windowful of the last drawn height, less one row of overlap, stopping at the last of
+    /// `len`.
+    pub fn page_down(&mut self, len: usize) {
+        self.selected = (self.selected + self.page()).min(len.saturating_sub(1));
+    }
+
+    /// Visible rows, as of the last draw. Zero until a list has drawn this selection.
+    pub fn height(&self) -> usize {
+        self.height.get()
+    }
+
+    /// Rows a page moves by: the window, less a row of context, and never nothing.
+    fn page(&self) -> usize {
+        self.height.get().saturating_sub(1).max(1)
     }
 
     /// Adjust after the row at `index` was removed, `len` being the length that remains.
@@ -158,9 +185,12 @@ impl Selection {
     }
 
     /// The rows a list of `len` items should draw into `height` rows, scrolling to keep the
-    /// selection visible, and recording the offset for next frame.
+    /// selection visible, and recording the offset and the height for next frame.
     pub fn window(&self, height: u16, len: usize) -> Range<usize> {
         let height = usize::from(height);
+        // Recorded even when there is nothing to draw into it, because the next key press asks
+        // what a page is and an empty list still has a height.
+        self.height.set(height);
         if height == 0 || len == 0 {
             return 0..0;
         }
@@ -1069,8 +1099,11 @@ impl Dropdown {
             KeyCode::Down => self.selection.down(len),
             KeyCode::Home => self.selection.first(),
             KeyCode::End => self.selection.last(len),
-            KeyCode::PageUp => self.selection.page_up(usize::from(self.rows)),
-            KeyCode::PageDown => self.selection.page_down(usize::from(self.rows), len),
+            // `rows` is the cap on the popup's height, not the height it got: a three-choice list
+            // inside a cap of eight paged by eight. The selection knows what the menu actually
+            // drew, borders excluded, because the menu is what asked it for a window.
+            KeyCode::PageUp => self.selection.page_up(),
+            KeyCode::PageDown => self.selection.page_down(len),
             KeyCode::Enter | KeyCode::Char(' ') => self.commit(),
             KeyCode::Escape => self.dismiss(),
             // Deliberately greedy: see above.
@@ -1210,15 +1243,49 @@ mod tests {
     #[test]
     fn paging_moves_by_a_screen_and_stops_at_the_edges() {
         let mut selection = Selection::new();
-        selection.page_down(10, 25);
+        // Eleven visible rows: a page is ten, leaving the eleventh as the row the eye lands on.
+        selection.window(11, 25);
+        selection.page_down(25);
         assert_eq!(selection.selected(), 10);
-        selection.page_down(10, 25);
-        selection.page_down(10, 25);
+        selection.page_down(25);
+        selection.page_down(25);
         assert_eq!(selection.selected(), 24);
-        selection.page_up(10);
+        selection.page_up();
         assert_eq!(selection.selected(), 14);
-        selection.page_up(100);
+        for _ in 0..10 {
+            selection.page_up();
+        }
         assert_eq!(selection.selected(), 0);
+    }
+
+    #[test]
+    fn a_page_is_the_height_the_list_was_drawn_at() {
+        let mut selection = Selection::new();
+        selection.window(6, 100);
+        selection.page_down(100);
+        assert_eq!(selection.selected(), 5, "five rows, with the sixth carried over");
+        // The window a resize gave it, not the one it had when the key was bound.
+        selection.window(21, 100);
+        selection.page_down(100);
+        assert_eq!(selection.selected(), 25);
+    }
+
+    #[test]
+    fn a_selection_no_list_has_drawn_pages_by_one_row() {
+        let mut selection = Selection::new();
+        assert_eq!(selection.height(), 0, "nothing has drawn it");
+        // A page of zero would leave PageDown doing nothing at all, which reads as a dead key.
+        selection.page_down(10);
+        assert_eq!(selection.selected(), 1);
+        selection.page_up();
+        assert_eq!(selection.selected(), 0);
+    }
+
+    #[test]
+    fn a_window_records_its_height_even_with_nothing_to_show() {
+        let selection = Selection::new();
+        selection.window(9, 0);
+        assert_eq!(selection.height(), 9, "an empty list still has a height to page by");
     }
 
     // ---- Viewport -----------------------------------------------------------------------
