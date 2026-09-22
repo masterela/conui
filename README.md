@@ -613,7 +613,7 @@ cargo test --workspace                  # 426 unit tests + 19 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 27 more
 cargo test -p conui --example settings  # 55 more
-cargo test -p conui --example monitor   # 57 more, three of which read the machine they run on
+cargo test -p conui --example monitor   # 59 more, three of which read the machine they run on
 cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
