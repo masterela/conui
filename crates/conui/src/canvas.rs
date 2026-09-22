@@ -900,6 +900,40 @@ mod tests {
     }
 
     #[test]
+    fn a_vertical_rule_fills_one_column() {
+        let mut buffer = canvas_of(4, 4);
+        draw(&mut buffer, |canvas| canvas.rule_vertical(1, 1, 2, Role::Dim));
+        assert_eq!(buffer.row_text(0), "    ");
+        assert_eq!(buffer.row_text(1), " │  ");
+        assert_eq!(buffer.row_text(2), " │  ");
+        assert_eq!(buffer.row_text(3), "    ");
+    }
+
+    #[test]
+    fn a_vertical_rule_is_relative_to_its_region_like_a_horizontal_one() {
+        // The pair are written differently — `rule` delegates to `run`, `rule_vertical` loops and
+        // adds the origin itself — so the thing worth asserting is that they agree about what a
+        // coordinate means. A sub-canvas is where a disagreement would show up.
+        let mut buffer = canvas_of(6, 4);
+        draw(&mut buffer, |canvas| {
+            let mut region = canvas.sub(Rect::new(2, 1, 4, 3));
+            region.rule_vertical(0, 0, 3, Role::Dim);
+            region.rule(1, 0, 3, Role::Dim);
+        });
+        assert_eq!(buffer.row_text(0), "      ");
+        assert_eq!(buffer.row_text(1), "  │───");
+        assert_eq!(buffer.row_text(2), "  │   ");
+        assert_eq!(buffer.row_text(3), "  │   ");
+    }
+
+    #[test]
+    fn a_vertical_rule_of_no_length_draws_nothing() {
+        let mut buffer = canvas_of(3, 2);
+        draw(&mut buffer, |canvas| canvas.rule_vertical(0, 0, 0, Role::Dim));
+        assert_eq!(buffer.row_text(0), "   ");
+    }
+
+    #[test]
     fn a_mesh_with_an_odd_width_does_not_overrun_its_region() {
         let mut buffer = canvas_of(8, 1);
         draw(&mut buffer, |canvas| {

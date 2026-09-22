@@ -625,7 +625,7 @@ over mid-suite.
 ## Development
 
 ```sh
-cargo test --workspace                  # 435 unit tests + 19 doctests
+cargo test --workspace                  # 449 unit tests + 19 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 27 more
 cargo test -p conui --example settings  # 55 more
@@ -656,27 +656,33 @@ with no local compiler to check it. Rustdoc needs no such thing: it reads the sa
 and it runs with `-D warnings` so a dead intra-doc link fails the build rather than waiting to be
 found by a reader.
 
-Test counts by crate: `conui` 289, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
+Test counts by crate: `conui` 307, `conui-cell` 55, `conui-input` 52, `conui-term` 35.
 
 Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so a whole screen
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what
 `--dump` prints, so the text in this README is checked the same way the tests are.
 
-### Publishing goes in dependency order
+### Publishing
 
-`cargo package` rewrites path dependencies into registry ones, so a crate cannot be packaged until
-everything it depends on is already on crates.io. The order is forced:
+`cargo package` rewrites path dependencies into registry ones, so there is an order: `conui-cell` and
+`conui-input` depend on nothing in here, `conui-term` needs `conui-cell`, and `conui` needs all three.
+Cargo works that out itself, which makes a release one command and a rehearsal of it another:
 
 ```sh
-cargo publish -p conui-cell     # unicode-width only
-cargo publish -p conui-input    # no dependencies at all
-cargo publish -p conui-term     # needs conui-cell published
-cargo publish -p conui          # needs all three
+cargo publish --workspace --dry-run   # packages all four and builds each from its own tarball
+cargo publish --workspace             # same order, for real
 ```
 
-The first two can be dry-run at any time — `cargo package -p conui-cell` builds the crate from its
-own tarball, which catches a file the manifest forgot to include. The last two cannot, which is the
-one thing about this layout that costs something.
+The dry run is worth more than it sounds. Each crate is built from the tarball rather than the working
+tree, so a source file the manifest forgot to include fails here instead of on crates.io, where a
+version number cannot be reused. It also resolves the whole graph locally, so `conui` is verified
+against a packaged `conui-term` without either being published first — which used to be the awkward
+part of this layout and no longer is.
+
+All four share one version through `[workspace.package]` and go out together. While the major is `0`,
+read a minor bump as possibly breaking, because that is what Cargo does with it.
+[`CHANGELOG.md`](CHANGELOG.md) says what each release contains, and what it is known not to have
+proven yet.
 
 ## Credit
 
