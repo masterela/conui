@@ -85,6 +85,24 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
+  # `missing_docs` in each crate root keeps the docs present; this keeps them honest. A broken
+  # intra-doc link is invisible until someone reads the rendered page and finds a dead reference,
+  # which is exactly when nobody is in a position to fix it. Rustdoc reads the same source on every
+  # platform, so once is enough — unlike clippy, which sees a different `platform` module per host.
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install stable
+        run: rustup update stable --no-self-update && rustup default stable
+
+      - name: Docs
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
   msrv:
     name: msrv · 1.85
     runs-on: ubuntu-latest

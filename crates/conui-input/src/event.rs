@@ -5,32 +5,44 @@
 pub struct Modifiers(u8);
 
 impl Modifiers {
+    /// Nothing held.
     pub const NONE: Self = Self(0);
+    /// Shift. A shifted letter also arrives as its uppercase [`KeyCode::Char`].
     pub const SHIFT: Self = Self(1 << 0);
+    /// Alt, which some terminals send as an `Escape` prefix instead.
     pub const ALT: Self = Self(1 << 1);
+    /// Control.
     pub const CTRL: Self = Self(1 << 2);
     /// Command on macOS, Windows key elsewhere. Only reported by terminals that implement an
     /// extended keyboard protocol; the legacy encoding has no room for it.
     pub const SUPER: Self = Self(1 << 3);
+    /// Hyper. Extended keyboard protocols only, and rare on real keyboards.
     pub const HYPER: Self = Self(1 << 4);
+    /// Meta. Extended keyboard protocols only.
     pub const META: Self = Self(1 << 5);
 
+    /// The raw bitset.
     pub const fn bits(self) -> u8 {
         self.0
     }
 
+    /// True when nothing is held.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
 
+    /// True when every modifier in `other` is held.
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 
+    /// Everything held in either set.
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
+    /// Everything in `self` that is not in `other`, for ignoring a modifier you do not care
+    /// about: `modifiers.difference(Modifiers::SHIFT).is_empty()`.
     pub const fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
     }
@@ -84,26 +96,41 @@ impl std::ops::BitOrAssign for Modifiers {
 pub enum KeyCode {
     /// A character-producing key. Already case-correct: `Shift+a` arrives as `Char('A')`.
     Char(char),
+    /// `Enter` or `Return`; terminals do not distinguish them.
     Enter,
+    /// `Tab`.
     Tab,
     /// `Shift+Tab`, which terminals report as its own sequence rather than Tab plus a modifier.
     BackTab,
+    /// `Backspace`, however this terminal encodes it.
     Backspace,
+    /// `Escape` alone, once the parser has ruled out a sequence beginning with it.
     Escape,
+    /// Forward delete.
     Delete,
+    /// `Insert`.
     Insert,
+    /// Left arrow.
     Left,
+    /// Right arrow.
     Right,
+    /// Up arrow.
     Up,
+    /// Down arrow.
     Down,
+    /// `Home`.
     Home,
+    /// `End`.
     End,
+    /// `Page Up`.
     PageUp,
+    /// `Page Down`.
     PageDown,
     /// Function key, 1-based.
     F(u8),
     /// The centre key of the numeric keypad with Num Lock off.
     KeypadBegin,
+    /// The context-menu key.
     Menu,
 }
 
@@ -114,25 +141,33 @@ pub enum KeyCode {
 /// [`KeyEventKind::Release`] as "the key is down".
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum KeyEventKind {
+    /// The key went down.
     #[default]
     Press,
+    /// The key is held and the terminal is auto-repeating it.
     Repeat,
+    /// The key came up.
     Release,
 }
 
 /// A key, its modifiers, and whether it went down or up.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct KeyEvent {
+    /// Which key.
     pub code: KeyCode,
+    /// What was held with it.
     pub modifiers: Modifiers,
+    /// Down, held, or up.
     pub kind: KeyEventKind,
 }
 
 impl KeyEvent {
+    /// A press of `code` with `modifiers` held.
     pub const fn new(code: KeyCode, modifiers: Modifiers) -> Self {
         Self { code, modifiers, kind: KeyEventKind::Press }
     }
 
+    /// A press of `code` with nothing held. What a key table or a test wants.
     pub const fn plain(code: KeyCode) -> Self {
         Self::new(code, Modifiers::NONE)
     }
@@ -160,23 +195,32 @@ impl KeyEvent {
 /// Which button a mouse event concerns.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MouseButton {
+    /// The primary button.
     Left,
+    /// The wheel button.
     Middle,
+    /// The secondary button.
     Right,
 }
 
 /// What the mouse did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum MouseKind {
+    /// A button went down. This is the one a click should act on.
     Down(MouseButton),
+    /// A button came up.
     Up(MouseButton),
     /// Motion with a button held.
     Drag(MouseButton),
     /// Motion with no button held. Only reported when the app asks for all-motion tracking.
     Moved,
+    /// One notch of the wheel away from the user.
     ScrollUp,
+    /// One notch of the wheel towards the user.
     ScrollDown,
+    /// One notch of horizontal scrolling left, where the hardware has it.
     ScrollLeft,
+    /// One notch of horizontal scrolling right, where the hardware has it.
     ScrollRight,
 }
 
@@ -200,12 +244,17 @@ impl MouseKind {
     }
 }
 
-/// A mouse event at a cell position. Coordinates are zero-based, matching [`conui_cell::Rect`].
+/// A mouse event at a cell position. Coordinates are zero-based, like every other cell
+/// coordinate in the kit — the terminal's own reporting is 1-based, and the parser subtracts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct MouseEvent {
+    /// What the mouse did.
     pub kind: MouseKind,
+    /// Column it happened in, zero-based.
     pub column: u16,
+    /// Row it happened in, zero-based.
     pub row: u16,
+    /// Modifiers held at the time.
     pub modifiers: Modifiers,
 }
 
@@ -223,7 +272,9 @@ impl MouseEvent {
 /// Anything the terminal can tell us.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
+    /// A key went down, is repeating, or came up.
     Key(KeyEvent),
+    /// The mouse was clicked, moved, or scrolled.
     Mouse(MouseEvent),
     /// A block of pasted text, delivered whole.
     ///
@@ -233,15 +284,20 @@ pub enum Event {
     Paste(String),
     /// The terminal window gained or lost focus.
     FocusGained,
+    /// The terminal window lost focus.
     FocusLost,
     /// A reply to a cursor-position query, zero-based.
     CursorPosition {
+        /// Column the cursor is in.
         column: u16,
+        /// Row the cursor is in.
         row: u16,
     },
     /// The terminal was resized. Synthesised by the event loop, not parsed from the stream.
     Resize {
+        /// New width in columns.
         width: u16,
+        /// New height in rows.
         height: u16,
     },
 }

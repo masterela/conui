@@ -15,27 +15,39 @@ use crate::Color;
 pub struct Attrs(u16);
 
 impl Attrs {
+    /// No attributes.
     pub const NONE: Self = Self(0);
+    /// SGR 1. Brighter or heavier, depending on the terminal.
     pub const BOLD: Self = Self(1 << 0);
+    /// SGR 2. Faint; what the `Dim` role leans on.
     pub const DIM: Self = Self(1 << 1);
+    /// SGR 3. Not honoured everywhere, so never the only thing carrying a meaning.
     pub const ITALIC: Self = Self(1 << 2);
+    /// SGR 4.
     pub const UNDERLINE: Self = Self(1 << 3);
+    /// SGR 5. Widely ignored, and unkind where it is not.
     pub const BLINK: Self = Self(1 << 4);
+    /// SGR 7. Swaps foreground and background.
     pub const REVERSE: Self = Self(1 << 5);
+    /// SGR 8. The cell keeps its width but shows nothing.
     pub const HIDDEN: Self = Self(1 << 6);
+    /// SGR 9.
     pub const STRIKETHROUGH: Self = Self(1 << 7);
 
     /// Every attribute at once. Mostly useful as a mask.
     pub const ALL: Self = Self(0xff);
 
+    /// The raw bitset, for a caller that needs to store or compare it as a number.
     pub const fn bits(self) -> u16 {
         self.0
     }
 
+    /// A set from raw bits, dropping any that name no attribute.
     pub const fn from_bits_truncate(bits: u16) -> Self {
         Self(bits & Self::ALL.0)
     }
 
+    /// True when no attribute is set.
     pub const fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -50,14 +62,17 @@ impl Attrs {
         self.0 & other.0 != 0
     }
 
+    /// Everything in either set.
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 
+    /// Everything in `self` that is not in `other`.
     pub const fn difference(self, other: Self) -> Self {
         Self(self.0 & !other.0)
     }
 
+    /// Everything in both sets.
     pub const fn intersection(self, other: Self) -> Self {
         Self(self.0 & other.0)
     }
@@ -109,7 +124,9 @@ impl std::ops::Not for Attrs {
 /// patching is associative: `a.patch(b).patch(c)` equals `a.patch(b.patch(c))`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Style {
+    /// Foreground color, or `None` to inherit.
     pub fg: Option<Color>,
+    /// Background color, or `None` to inherit.
     pub bg: Option<Color>,
     /// Attributes this style turns on.
     pub attrs: Attrs,
@@ -121,15 +138,18 @@ impl Style {
     /// A style that changes nothing. Patching with it is a no-op.
     pub const EMPTY: Self = Self { fg: None, bg: None, attrs: Attrs::NONE, cleared: Attrs::NONE };
 
+    /// An empty style, to build on. The same as [`Style::EMPTY`].
     pub const fn new() -> Self {
         Self::EMPTY
     }
 
+    /// State a foreground color.
     pub const fn fg(mut self, color: Color) -> Self {
         self.fg = Some(color);
         self
     }
 
+    /// State a background color.
     pub const fn bg(mut self, color: Color) -> Self {
         self.bg = Some(color);
         self
@@ -149,26 +169,32 @@ impl Style {
         self
     }
 
+    /// Add [`Attrs::BOLD`].
     pub const fn bold(self) -> Self {
         self.add(Attrs::BOLD)
     }
 
+    /// Add [`Attrs::DIM`].
     pub const fn dim(self) -> Self {
         self.add(Attrs::DIM)
     }
 
+    /// Add [`Attrs::ITALIC`].
     pub const fn italic(self) -> Self {
         self.add(Attrs::ITALIC)
     }
 
+    /// Add [`Attrs::UNDERLINE`].
     pub const fn underline(self) -> Self {
         self.add(Attrs::UNDERLINE)
     }
 
+    /// Add [`Attrs::REVERSE`].
     pub const fn reverse(self) -> Self {
         self.add(Attrs::REVERSE)
     }
 
+    /// Add [`Attrs::STRIKETHROUGH`].
     pub const fn strikethrough(self) -> Self {
         self.add(Attrs::STRIKETHROUGH)
     }
@@ -207,8 +233,11 @@ impl From<Color> for Style {
 /// A style with every field decided, as handed to the terminal writer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ResolvedStyle {
+    /// Foreground color; [`Color::Reset`] where nothing stated one.
     pub fg: Color,
+    /// Background color; [`Color::Reset`] where nothing stated one.
     pub bg: Color,
+    /// Attributes to switch on for this cell.
     pub attrs: Attrs,
 }
 

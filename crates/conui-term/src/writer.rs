@@ -43,6 +43,7 @@ pub struct Painter<W: Write> {
 }
 
 impl<W: Write> Painter<W> {
+    /// A painter writing to `out`, emitting only what `caps` says the terminal understands.
     pub fn new(out: W, caps: Capabilities) -> Self {
         Self {
             out,
@@ -55,15 +56,18 @@ impl<W: Write> Painter<W> {
         }
     }
 
+    /// What this painter believes the terminal can do.
     pub fn capabilities(&self) -> Capabilities {
         self.caps
     }
 
+    /// Replace the capabilities, forgetting any style the terminal was assumed to be in.
     pub fn set_capabilities(&mut self, caps: Capabilities) {
         self.caps = caps;
         self.invalidate();
     }
 
+    /// The sink being written to. For a test that wants to read back the bytes emitted.
     pub fn get_ref(&self) -> &W {
         &self.out
     }
@@ -152,6 +156,7 @@ impl<W: Write> Painter<W> {
         self.flush()
     }
 
+    /// Turn mouse reporting on or off, and record it in the capabilities.
     pub fn set_mouse_capture(&mut self, enabled: bool) -> io::Result<()> {
         self.push(if enabled { ansi::ENABLE_MOUSE } else { ansi::DISABLE_MOUSE });
         self.caps.mouse = enabled;
@@ -382,8 +387,8 @@ fn push_color_params(params: &mut Vec<u16>, color: Color, ground: Ground) {
     }
 }
 
-/// Attributes that a [`ColorDepth::NoColor`] terminal can still express, used by callers that
-/// want to keep a visual hierarchy without color.
+/// Attributes that a [`conui_cell::ColorDepth::NoColor`] terminal can still express, used by
+/// callers that want to keep a visual hierarchy without color.
 pub const MONOCHROME_EMPHASIS: Attrs = Attrs::BOLD;
 
 #[cfg(test)]

@@ -20,6 +20,10 @@
 //! # Ok::<(), std::io::Error>(())
 //! ```
 
+// This crate is the one an app reaches past conui for when it needs a sequence we do not wrap,
+// so every public item here should say what it emits.
+#![warn(missing_docs)]
+
 pub mod ansi;
 mod caps;
 mod platform;
@@ -117,6 +121,7 @@ impl Terminal {
         })
     }
 
+    /// What this terminal was detected to be capable of.
     pub fn capabilities(&self) -> Capabilities {
         self.painter.capabilities()
     }
@@ -128,6 +133,7 @@ impl Terminal {
         self.front.reset_to(cell);
     }
 
+    /// The painter underneath, for emitting a sequence this type does not wrap.
     pub fn painter(&mut self) -> &mut Painter<Stdout> {
         &mut self.painter
     }

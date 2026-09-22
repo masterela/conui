@@ -537,14 +537,20 @@ cargo run -p conui --example todo
 cargo run -p conui --example settings
 cargo fmt --all                         # rustfmt.toml pins use_small_heuristics = "Max"
 cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # every public item is documented
 ```
 
+The three lower crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build
+warning rather than something a reader discovers on docs.rs.
+
 `.github/workflows/ci.yml` runs exactly those commands on `macos-latest`, `ubuntu-latest` and
-`windows-latest`, plus rustfmt once and a `1.85` MSRV check — a `rust-version` nothing verifies is one
-that drifts the first time a newer API looks convenient. Clippy runs on *every* platform rather than
-just Linux, because the first run of this workflow found dead code in `platform/windows.rs` that a
-Linux-only lint job structurally cannot see, and that file is the one with no local compiler to check
-it.
+`windows-latest`, plus rustfmt once, rustdoc once and a `1.85` MSRV check — a `rust-version` nothing
+verifies is one that drifts the first time a newer API looks convenient. Clippy runs on *every*
+platform rather than just Linux, because the first run of this workflow found dead code in
+`platform/windows.rs` that a Linux-only lint job structurally cannot see, and that file is the one
+with no local compiler to check it. Rustdoc needs no such thing: it reads the same source everywhere,
+and it runs with `-D warnings` so a dead intra-doc link fails the build rather than waiting to be
+found by a reader.
 
 Test counts by crate: `conui` 259, `conui-cell` 55, `conui-input` 52, `conui-term` 30.
 

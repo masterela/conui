@@ -3,11 +3,14 @@
 /// A position in cell space, measured from the top-left of the screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Pos {
+    /// Columns from the left edge.
     pub x: u16,
+    /// Rows from the top edge.
     pub y: u16,
 }
 
 impl Pos {
+    /// A position at column `x`, row `y`.
     pub const fn new(x: u16, y: u16) -> Self {
         Self { x, y }
     }
@@ -16,15 +19,21 @@ impl Pos {
 /// Uniform or per-side inset applied inside a [`Rect`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Padding {
+    /// Rows taken off the top.
     pub top: u16,
+    /// Columns taken off the right.
     pub right: u16,
+    /// Rows taken off the bottom.
     pub bottom: u16,
+    /// Columns taken off the left.
     pub left: u16,
 }
 
 impl Padding {
+    /// No inset on any side.
     pub const ZERO: Self = Self::all(0);
 
+    /// The same inset on all four sides.
     pub const fn all(n: u16) -> Self {
         Self { top: n, right: n, bottom: n, left: n }
     }
@@ -34,10 +43,12 @@ impl Padding {
         Self { top: y, right: x, bottom: y, left: x }
     }
 
+    /// `n` columns on the left and right, nothing above or below.
     pub const fn horizontal(n: u16) -> Self {
         Self::xy(n, 0)
     }
 
+    /// `n` rows above and below, nothing either side.
     pub const fn vertical(n: u16) -> Self {
         Self::xy(0, n)
     }
@@ -46,15 +57,21 @@ impl Padding {
 /// A half-open rectangle of cells: `x .. x + width` by `y .. y + height`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Rect {
+    /// Leftmost column.
     pub x: u16,
+    /// Topmost row.
     pub y: u16,
+    /// Columns across.
     pub width: u16,
+    /// Rows down.
     pub height: u16,
 }
 
 impl Rect {
+    /// An empty rect at the origin. What a clip collapses to when nothing is visible.
     pub const ZERO: Self = Self { x: 0, y: 0, width: 0, height: 0 };
 
+    /// A rect of `width` by `height` cells with its top-left corner at `x`, `y`.
     pub const fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
         Self { x, y, width, height }
     }
@@ -64,10 +81,12 @@ impl Rect {
         Self { x: 0, y: 0, width, height }
     }
 
+    /// Cells covered. Widened to `u32` because a full screen of `u16` dimensions overflows one.
     pub const fn area(&self) -> u32 {
         self.width as u32 * self.height as u32
     }
 
+    /// True when it covers no cells, which is what a rect with either dimension zero means.
     pub const fn is_empty(&self) -> bool {
         self.width == 0 || self.height == 0
     }
@@ -82,6 +101,7 @@ impl Rect {
         self.y.saturating_add(self.height)
     }
 
+    /// True when `pos` is one of this rect's cells. Half-open, so `right()` is outside it.
     pub const fn contains(&self, pos: Pos) -> bool {
         pos.x >= self.x && pos.x < self.right() && pos.y >= self.y && pos.y < self.bottom()
     }

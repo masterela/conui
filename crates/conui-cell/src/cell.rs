@@ -21,6 +21,7 @@ pub struct Symbol {
 }
 
 impl Symbol {
+    /// Bytes a cluster can occupy before it is truncated to its base character.
     pub const CAPACITY: usize = 15;
 
     /// The absence of a symbol, used for the trailing half of a double-width cell.
@@ -30,6 +31,11 @@ impl Symbol {
     /// A single space. The default content of a cell.
     pub const SPACE: Self = Self::from_ascii(b' ');
 
+    /// One 7-bit byte as a symbol, `const` so the widget set can name its glyphs as constants.
+    ///
+    /// # Panics
+    ///
+    /// When `byte` is not ASCII: a lone UTF-8 continuation byte is not a cluster.
     pub const fn from_ascii(byte: u8) -> Self {
         assert!(byte < 0x80, "from_ascii requires a 7-bit value");
         let mut bytes = [0; Self::CAPACITY];
@@ -56,12 +62,14 @@ impl Symbol {
         }
     }
 
+    /// The cluster as text. Empty for a continuation cell.
     pub fn as_str(&self) -> &str {
         // Safe: every constructor copies from a `&str` or a single ASCII byte, so the
         // occupied prefix is always valid UTF-8.
         std::str::from_utf8(&self.bytes[..self.len as usize]).unwrap_or("")
     }
 
+    /// True for the empty symbol, which is to say: a continuation, not a space.
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -109,7 +117,9 @@ impl From<&str> for Symbol {
 /// One cell: what to draw, and how it looks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Cell {
+    /// The grapheme cluster drawn in this cell.
     pub symbol: Symbol,
+    /// How it is drawn. Unset colors are resolved against the theme by the writer.
     pub style: Style,
 }
 
@@ -120,6 +130,7 @@ impl Cell {
     /// The trailing column of a double-width grapheme.
     pub const CONTINUATION: Self = Self { symbol: Symbol::EMPTY, style: Style::EMPTY };
 
+    /// A cell showing `symbol` in `style`.
     pub fn new(symbol: impl Into<Symbol>, style: Style) -> Self {
         Self { symbol: symbol.into(), style }
     }
@@ -129,6 +140,7 @@ impl Cell {
         self.symbol.is_empty()
     }
 
+    /// Columns this cell's symbol occupies: 0 for a continuation, 2 for a wide grapheme, else 1.
     pub fn width(&self) -> u16 {
         self.symbol.width()
     }

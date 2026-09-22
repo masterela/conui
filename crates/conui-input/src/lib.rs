@@ -39,6 +39,10 @@
 //! for event in parser.drain() { /* ... */ }
 //! ```
 
+// Every type here is something an app matches on in its key handler; an undocumented variant is
+// one the reader has to guess the meaning of.
+#![warn(missing_docs)]
+
 mod event;
 mod parser;
 
