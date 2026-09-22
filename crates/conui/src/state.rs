@@ -64,6 +64,7 @@ impl Clone for Selection {
 }
 
 impl Selection {
+    /// Row zero selected, nothing scrolled.
     pub fn new() -> Self {
         Self::default()
     }
@@ -73,6 +74,7 @@ impl Selection {
         Self { selected: index, ..Self::default() }
     }
 
+    /// The selected row.
     pub const fn selected(&self) -> usize {
         self.selected
     }
@@ -82,6 +84,7 @@ impl Selection {
         self.offset.get()
     }
 
+    /// Select a row without checking it exists; [`Selection::clamp`] is what checks.
     pub fn set_selected(&mut self, index: usize) {
         self.selected = index;
     }
@@ -94,10 +97,13 @@ impl Selection {
         self.selected = self.selected.min(len.saturating_sub(1));
     }
 
+    /// Up one row, stopping at the first. Does not wrap: an arrow key that jumps to the far end
+    /// of a list reads as a glitch rather than as a feature.
     pub fn up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
     }
 
+    /// Down one row, stopping at the last of `len`.
     pub fn down(&mut self, len: usize) {
         if self.selected + 1 < len {
             self.selected += 1;
@@ -123,10 +129,12 @@ impl Selection {
         self.selected = (self.selected + 1) % len;
     }
 
+    /// Select the first row. What `HOME` does.
     pub fn first(&mut self) {
         self.selected = 0;
     }
 
+    /// Select the last of `len` rows. What `END` does.
     pub fn last(&mut self, len: usize) {
         self.selected = len.saturating_sub(1);
     }
@@ -259,6 +267,7 @@ impl Clone for Viewport {
 }
 
 impl Viewport {
+    /// Scrolled to the top, with nothing yet known about the height or the content.
     pub fn new() -> Self {
         Self::default()
     }
@@ -288,10 +297,12 @@ impl Viewport {
         self.content.get()
     }
 
+    /// Whether the first row of content is showing.
     pub fn is_at_top(&self) -> bool {
         self.offset.get() == 0
     }
 
+    /// Whether the last row of content is showing, as of the last draw.
     pub fn is_at_bottom(&self) -> bool {
         self.offset.get() >= self.overflow()
     }
@@ -328,6 +339,7 @@ impl Viewport {
         self.scroll(-i32::from(self.page()));
     }
 
+    /// Down by a windowful, less the same row of overlap.
     pub fn page_down(&self) {
         self.scroll(i32::from(self.page()));
     }
@@ -336,10 +348,13 @@ impl Viewport {
         self.height.get().saturating_sub(1).max(1)
     }
 
+    /// Scroll to the first row of content.
     pub fn top(&self) {
         self.offset.set(0);
     }
 
+    /// Scroll to the last row of content, or as far as it will go before the first draw has said
+    /// how far that is.
     pub fn bottom(&self) {
         self.offset.set(self.limit());
     }
@@ -385,6 +400,7 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// An empty field.
     pub fn new() -> Self {
         Self::default()
     }
@@ -396,6 +412,7 @@ impl Editor {
         Self { value, cursor }
     }
 
+    /// The text as it stands.
     pub fn value(&self) -> &str {
         &self.value
     }
@@ -405,6 +422,7 @@ impl Editor {
         self.cursor
     }
 
+    /// Whether there is no text. What decides between a value and a placeholder.
     pub fn is_empty(&self) -> bool {
         self.value.is_empty()
     }
@@ -487,6 +505,7 @@ impl Editor {
         self.cursor = self.value.len();
     }
 
+    /// Empty the field, cursor back to the start.
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
@@ -498,6 +517,7 @@ impl Editor {
         std::mem::take(&mut self.value)
     }
 
+    /// Insert one character at the cursor, and step over it.
     pub fn insert(&mut self, character: char) {
         self.value.insert(self.cursor, character);
         self.cursor += character.len_utf8();
@@ -553,22 +573,27 @@ impl Editor {
         self.cursor = start;
     }
 
+    /// Back one grapheme, not one byte — an accented letter or an emoji moves as the one thing
+    /// the user sees, and a cursor parked mid-codepoint would panic the next slice.
     pub fn left(&mut self) {
         if let Some(previous) = self.previous_boundary() {
             self.cursor = previous;
         }
     }
 
+    /// Forward one grapheme.
     pub fn right(&mut self) {
         if let Some(next) = self.next_boundary() {
             self.cursor = next;
         }
     }
 
+    /// Cursor to the start of the text.
     pub fn home(&mut self) {
         self.cursor = 0;
     }
 
+    /// Cursor to the end of the text.
     pub fn end(&mut self) {
         self.cursor = self.value.len();
     }
@@ -724,10 +749,12 @@ impl<T: Copy + PartialEq> Focus<T> {
         }
     }
 
+    /// Focus the first entry.
     pub fn first(&mut self) {
         self.current = 0;
     }
 
+    /// Focus the last entry.
     pub fn last(&mut self) {
         self.current = self.ring.len().saturating_sub(1);
     }
@@ -746,14 +773,17 @@ impl<T: Copy + PartialEq> Focus<T> {
             .min(self.ring.len().saturating_sub(1));
     }
 
+    /// The focusable set, in `Tab` order.
     pub fn ring(&self) -> &[T] {
         &self.ring
     }
 
+    /// How many entries are focusable.
     pub fn len(&self) -> usize {
         self.ring.len()
     }
 
+    /// Whether nothing is focusable, in which case [`Focus::current`] is `None`.
     pub fn is_empty(&self) -> bool {
         self.ring.is_empty()
     }
@@ -831,6 +861,7 @@ impl<T: Copy> Clone for Hits<T> {
 }
 
 impl<T: Copy> Hits<T> {
+    /// An empty table, which answers `None` to everything until a frame has been composed.
     pub fn new() -> Self {
         Self { regions: RefCell::new(Vec::new()) }
     }
@@ -878,6 +909,7 @@ impl<T: Copy> Hits<T> {
         self.regions.borrow().len()
     }
 
+    /// Whether nothing was recorded — no frame composed yet, or one that drew no controls.
     pub fn is_empty(&self) -> bool {
         self.regions.borrow().is_empty()
     }
@@ -956,6 +988,7 @@ impl Dropdown {
         self
     }
 
+    /// Whether the list is showing. What tells an app to route keys to the dropdown first.
     pub const fn is_open(&self) -> bool {
         self.open
     }
@@ -967,6 +1000,7 @@ impl Dropdown {
         self.selection.selected()
     }
 
+    /// Choose `index` directly, as loading a saved setting does.
     pub fn set_selected(&mut self, index: usize) {
         self.selection.set_selected(index);
     }
@@ -976,6 +1010,7 @@ impl Dropdown {
         &self.selection
     }
 
+    /// Show the list, remembering the current choice in case it is dismissed.
     pub fn open(&mut self) {
         self.open = true;
         self.restore = self.selection.selected();
@@ -992,6 +1027,8 @@ impl Dropdown {
         self.selection.set_selected(self.restore);
     }
 
+    /// Open the list, or accept the highlighted choice if it is already open. What `Enter` and a
+    /// click on the field both mean.
     pub fn toggle(&mut self) {
         if self.open {
             self.commit();
@@ -1005,6 +1042,10 @@ impl Dropdown {
         self.field.get()
     }
 
+    /// Record where the closed field drew itself, so the list can be placed under it next frame.
+    ///
+    /// Called by the widget during render, not by an app: only the draw knows where the field
+    /// ended up, and the list is positioned a pass later.
     pub fn set_field(&self, area: Rect) {
         self.field.set(area);
     }

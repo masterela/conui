@@ -76,6 +76,7 @@ pub mod canvas;
 pub mod frame;
 #[warn(missing_docs)]
 pub mod layout;
+#[warn(missing_docs)]
 pub mod state;
 #[warn(missing_docs)]
 pub mod theme;
