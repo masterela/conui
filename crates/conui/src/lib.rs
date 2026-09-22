@@ -64,25 +64,20 @@
 // meets first were the least likely to say anything. Publishing 0.1 makes every one of them a
 // promise, and a promise with no sentence attached is one nobody can rely on.
 //
-// The lint goes on a module at a time rather than on the crate, because switching it on everywhere
-// at once would mean either 191 doc comments in one change or `allow` sprinkled over the modules
-// that are not done yet — and an `allow` is how a lint like this quietly stops meaning anything.
-// A module carrying the attribute is finished and cannot regress; the rest are still to do.
-#[warn(missing_docs)]
+// Getting here took nine changes, one module at a time, each of them carrying the attribute on a
+// single `pub mod` — because switching it on at the crate root with 191 items undocumented would
+// have meant either one unreviewable change or an `allow` per module, and an `allow` is how a lint
+// like this quietly stops meaning anything. Every module is through now, so the lint comes up here
+// where it also covers whatever module is added next.
+#![warn(missing_docs)]
+
 pub mod app;
-#[warn(missing_docs)]
 pub mod canvas;
-#[warn(missing_docs)]
 pub mod frame;
-#[warn(missing_docs)]
 pub mod layout;
-#[warn(missing_docs)]
 pub mod state;
-#[warn(missing_docs)]
 pub mod theme;
-#[warn(missing_docs)]
 pub mod typography;
-#[warn(missing_docs)]
 pub mod view;
 pub mod widget;
 
