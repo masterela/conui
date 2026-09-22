@@ -29,7 +29,7 @@
 //! ```
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -116,9 +116,12 @@ fn dump(width: u16, height: u16) {
     let mut buffer = Buffer::new(width, height);
     let mut frame = Frame::new(&mut buffer, Theme::LAYA);
     compose(&mut frame, &todo);
-    for row in 0..height {
-        println!("{}", buffer.row_text(row).trim_end());
-    }
+    // One write rather than a `println!` per row, because `println!` unwraps: `--dump | head -3`
+    // would abort with `Broken pipe`, and a dump prints text precisely so it can be piped. A
+    // reader that stops reading is a normal end to this, not a failure.
+    let text: String =
+        (0..height).map(|row| format!("{}\n", buffer.row_text(row).trim_end())).collect();
+    let _ = io::stdout().write_all(text.as_bytes());
 }
 
 // ---- The screen -------------------------------------------------------------------------
