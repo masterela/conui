@@ -163,6 +163,14 @@ pub mod mark {
     pub const EMPTY: char = '—';
     pub const CHECK: char = '✓';
     pub const CROSS: char = '✗';
+    /// A closed dropdown. Small triangles rather than `v`, which reads as a letter.
+    pub const CARET_DOWN: char = '▾';
+    /// An open dropdown, or one whose list flipped above its field.
+    pub const CARET_UP: char = '▴';
+    /// The sides of a button. The same family as [`SELECTED`], so a focused control and a
+    /// selected row look like they belong to one system.
+    pub const BUTTON_LEFT: char = '‹';
+    pub const BUTTON_RIGHT: char = '›';
     /// Separates items on a status line.
     pub const SEPARATOR: char = '·';
 }
