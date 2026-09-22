@@ -603,8 +603,14 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 | Platform | Status |
 |---|---|
 | macOS | Developed and tested here (Apple Silicon, Darwin 25), and in CI on `macos-latest`. |
-| Linux | Builds and passes the whole suite in CI on `ubuntu-latest`, over the same `rustix` termios path as macOS. Not yet driven interactively in a Linux terminal. |
+| Linux | Builds and passes the whole suite in CI on `ubuntu-latest`, over the same `rustix` termios path as macOS, and the `monitor` example's `/proc` parser is exercised against the runner's own machine. Not yet driven interactively in a Linux terminal. |
 | Windows | `crates/conui-term/src/platform/windows.rs` — `ENABLE_VIRTUAL_TERMINAL_INPUT` and `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, screen-buffer size, a `WaitForSingleObject` readable poll, and mode restore on exit — **compiles, and the whole suite passes**, on `windows-latest` in CI. It has never been driven interactively in a real console, so what remains unproven is the part no headless test can reach: that raw mode, VT mode and the escape output actually behave in conhost, Windows Terminal and PowerShell. |
+
+Every test in this workspace renders into a `Buffer` and asserts on text, which is the right way to
+test a layout and is structurally incapable of testing the handshake itself: raw mode, live input
+decoding, and giving the terminal back. [`docs/terminal-handshake.md`](docs/terminal-handshake.md) is
+the checklist for the part a person has to sit down and do — eight items, about ten minutes per
+machine, with a report template at the end. It is what the two rows above are waiting on.
 
 ## Development
 
