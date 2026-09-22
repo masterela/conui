@@ -81,6 +81,29 @@ impl<'a> Canvas<'a> {
         Rect::new(x, y, self.width, self.height)
     }
 
+    /// The part of this canvas's region that is actually on screen, in *buffer* coordinates.
+    ///
+    /// [`Canvas::screen_area`] is where the region claims to be; this is where it can be seen.
+    /// The two differ whenever something above has clipped it — half a control in a window too
+    /// narrow for it, or a row of a scrolled pane sitting above the fold, where the region's origin
+    /// is negative and a `Rect` cannot say so. Empty when none of it was drawn.
+    ///
+    /// This is the one a click should be resolved against. A region that was clipped away was not
+    /// on screen, and a pointer cannot have landed on it.
+    pub fn visible_area(&self) -> Rect {
+        // Intersected in signed space for the same reason `shifted` builds its clip that way: the
+        // region's top-left can be negative, and clamping it to zero first would slide the region
+        // down the screen into rows that belong to whatever is drawn there instead.
+        let left = self.origin_x.max(i32::from(self.clip.x));
+        let top = self.origin_y.max(i32::from(self.clip.y));
+        let right = (self.origin_x + i32::from(self.width)).min(i32::from(self.clip.right()));
+        let bottom = (self.origin_y + i32::from(self.height)).min(i32::from(self.clip.bottom()));
+        if right <= left || bottom <= top {
+            return Rect::ZERO;
+        }
+        Rect::new(left as u16, top as u16, (right - left) as u16, (bottom - top) as u16)
+    }
+
     pub const fn width(&self) -> u16 {
         self.width
     }
@@ -1000,5 +1023,39 @@ mod tests {
         let nested = canvas.sub(Rect::new(0, 0, 4, 1));
         // A negative origin is reachable through repeated insets; it must not wrap to 65535.
         assert_eq!(nested.screen_area().x, 0);
+    }
+
+    #[test]
+    fn a_canvas_that_fits_is_visible_exactly_where_it_says_it_is() {
+        let mut buffer = Buffer::new(20, 10);
+        let canvas = Canvas::new(&mut buffer, Rect::new(2, 3, 8, 4), Theme::LAYA);
+        assert_eq!(canvas.visible_area(), canvas.screen_area());
+    }
+
+    #[test]
+    fn a_canvas_clipped_by_its_parent_is_visible_only_where_it_shows() {
+        let mut buffer = Buffer::new(20, 10);
+        let mut canvas = Canvas::new(&mut buffer, Rect::new(0, 0, 6, 2), Theme::LAYA);
+        // A child taller and wider than the region it was given: it draws inside, but only the
+        // part inside can be seen, and a click on the rest would land on whatever is out there.
+        let child = canvas.sub(Rect::new(0, 0, 10, 5));
+        assert_eq!(child.screen_area(), Rect::new(0, 0, 10, 5), "what the region claims");
+        assert_eq!(child.visible_area(), Rect::new(0, 0, 6, 2), "what shows");
+    }
+
+    #[test]
+    fn a_canvas_above_the_fold_of_a_scrolled_region_is_visible_nowhere() {
+        let mut buffer = Buffer::new(8, 6);
+        let mut canvas = Canvas::new(&mut buffer, Rect::new(0, 2, 8, 3), Theme::LAYA);
+        let mut content = canvas.shifted(0, -4, 8, 9);
+        // The first two rows of the content are scrolled past the top of the pane.
+        let gone = content.sub(Rect::new(0, 0, 8, 2));
+        assert!(gone.visible_area().is_empty(), "got {:?}", gone.visible_area());
+        // Clamping instead of intersecting in signed space would have said row 0, which on this
+        // screen is two rows above the pane and belongs to whatever is drawn there.
+        assert_eq!(gone.screen_area(), Rect::new(0, 0, 8, 2), "which is why this one is a lie");
+
+        let straddling = content.sub(Rect::new(0, 3, 8, 3));
+        assert_eq!(straddling.visible_area(), Rect::new(0, 2, 8, 2), "the rows inside the pane");
     }
 }

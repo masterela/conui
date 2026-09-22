@@ -811,6 +811,10 @@ impl<T: Copy + PartialEq> Focus<T> {
 /// assert_eq!(hits.at(Pos::new(3, 9)), None);
 /// ```
 ///
+/// Entries are what was *visible*. A control clipped away by a window too small for it, or scrolled
+/// out of its pane, records nothing — see [`Canvas::visible_area`](crate::Canvas::visible_area) — so
+/// a click can only ever resolve to something that was on screen to be clicked.
+///
 /// Clear it at the top of every frame. A stale entry is worse than a missing one: it points at
 /// where a control used to be, which is exactly the bug that makes a UI feel haunted.
 #[derive(Debug, Default)]
