@@ -9,7 +9,6 @@
 //! focused is *told* so with `.focused(bool)` rather than asking a registry.
 
 use conui_cell::{Padding, Rect, Style};
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::canvas::{Canvas, text_width};
 use crate::layout::Constraint;
@@ -1157,33 +1156,23 @@ impl View for Input<'_> {
             return;
         }
 
-        let value = self.editor.value();
+        // Scrolled only as far as needed to keep the cursor inside the field. The rule belongs to
+        // the editor, not to this widget, so that a click can be resolved against the same one.
+        let (shown, hidden) = self.editor.view_from(field);
         let cursor_column = self.editor.cursor_column();
-        // Scroll only as far as needed to keep the cursor inside the field, leaving it room to
-        // sit one past the last character — where it is when you are typing at the end.
-        let scroll = cursor_column.saturating_sub(field - 1);
-        let mut skipped = 0u16;
-        let mut start = 0usize;
-        for grapheme in value.graphemes(true) {
-            if skipped >= scroll {
-                break;
-            }
-            skipped += text_width(grapheme);
-            start += grapheme.len();
-        }
 
-        if value.is_empty() {
+        if self.editor.is_empty() {
             if let Some(placeholder) = &self.placeholder {
                 canvas.put_truncated(i32::from(x), 0, placeholder, field, self.placeholder_role);
             }
         } else {
             // `put`, not `put_truncated`: an overlong value has scrolled out of view, and an
             // ellipsis would claim text was dropped when it is merely off to the left.
-            canvas.put(i32::from(x), 0, &value[start..], self.role);
+            canvas.put(i32::from(x), 0, shown, self.role);
         }
 
         if self.cursor {
-            let column = x + cursor_column.saturating_sub(skipped);
+            let column = x + cursor_column.saturating_sub(hidden);
             if column < width {
                 canvas.style_area(Rect::new(column, 0, 1, 1), Style::new().reverse());
             }

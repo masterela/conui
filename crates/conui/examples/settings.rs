@@ -28,7 +28,9 @@
 //!
 //! Applying really does re-theme the running app, so the buttons are not decoration. The whole
 //! screen is usable with the mouse as well: click a tab, a field or a button, click a dropdown to
-//! open it, click an option to choose it, click anywhere else to dismiss it.
+//! open it, click an option to choose it, click anywhere else to dismiss it. Clicking into the text
+//! field puts the caret where you pointed, which needs both halves of a click — the region the
+//! field drew itself in, and how far its text had scrolled when it did.
 //!
 //! ```sh
 //! cargo run -p conui --example settings
@@ -718,7 +720,18 @@ impl Ui {
                     self.retarget();
                 }
             }
-            Id::Label => {} // Focus only. Placing the caret would want Editor to take a column.
+            Id::Label => {
+                // The caret goes where you pointed. `local` is the column within the field, and
+                // the field may have scrolled: `view_from` reports how much of the text is off to
+                // the left, measured against the frame that was clicked, because the cursor has
+                // not moved yet.
+                let local = self.hits.local(Id::Label, at);
+                let area = self.hits.area_of(Id::Label);
+                if let (Some(local), Some(area)) = (local, area) {
+                    let (_, hidden) = self.label.view_from(area.width);
+                    self.label.set_cursor_column(hidden + local.x);
+                }
+            }
             // Focus only, so the arrow keys carry on scrolling from where the wheel stopped.
             Id::About => {}
             Id::Revert => self.revert(),
@@ -991,10 +1004,15 @@ mod tests {
         }))
     }
 
+    /// Where a control drew itself last frame.
+    fn area_of(ui: &mut Ui, id: Id) -> Rect {
+        let _ = screen(ui, 88, 24);
+        ui.hits.area_of(id).unwrap_or_else(|| panic!("{id:?} did not draw"))
+    }
+
     /// The middle of a control, from where it drew itself.
     fn centre_of(ui: &mut Ui, id: Id) -> (u16, u16) {
-        let _ = screen(ui, 88, 24);
-        let area = ui.hits.area_of(id).unwrap_or_else(|| panic!("{id:?} did not draw"));
+        let area = area_of(ui, id);
         (area.x + area.width / 2, area.y + area.height / 2)
     }
 
@@ -1211,15 +1229,56 @@ mod tests {
     // ---- Mouse ---------------------------------------------------------------------------
 
     #[test]
+    fn clicking_in_the_text_field_puts_the_caret_where_you_pointed() {
+        let mut ui = Ui::new();
+        let field = area_of(&mut ui, Id::Label);
+        // Five cells in: between "LOCAL" and the space that follows it.
+        click_at(&mut ui, field.x + 5, field.y);
+        press(&mut ui, KeyCode::Char('X'));
+        assert_eq!(ui.label.value(), "LOCALX INTELLIGENCE");
+    }
+
+    #[test]
+    fn clicking_the_empty_part_of_a_field_is_a_request_to_type_at_the_end() {
+        let mut ui = Ui::new();
+        let field = area_of(&mut ui, Id::Label);
+        click_at(&mut ui, field.right() - 1, field.y);
+        press(&mut ui, KeyCode::Char('!'));
+        assert_eq!(ui.label.value(), "LOCAL INTELLIGENCE!");
+    }
+
+    #[test]
+    fn clicking_a_scrolled_field_lands_on_the_character_you_can_see() {
+        let mut ui = Ui::new();
+        // Longer than the field, so it is showing its tail rather than its head.
+        let long: String = ('a'..='z').chain('0'..='9').collect();
+        ui.label.set_value(&long);
+        let field = area_of(&mut ui, Id::Label);
+        let (shown, hidden) = {
+            let (shown, hidden) = ui.label.view_from(field.width);
+            (shown.to_owned(), hidden)
+        };
+        assert!(hidden > 0, "the field should have scrolled: {shown:?}");
+
+        // The leftmost visible cell. A handler that ignored the scroll would put the caret at the
+        // start of the text instead, which is a different character entirely.
+        click_at(&mut ui, field.x, field.y);
+        press(&mut ui, KeyCode::Char('|'));
+        assert_eq!(ui.label.value(), format!("{}|{}", &long[..hidden as usize], shown));
+        assert!(ui.label.value().starts_with("abc"), "and the text itself is not reordered");
+    }
+
+    #[test]
     fn clicking_a_control_moves_focus_to_it() {
         let mut ui = Ui::new();
         assert_eq!(ui.focus.current(), Some(Id::Tabs));
         let (x, y) = centre_of(&mut ui, Id::Label);
         click_at(&mut ui, x, y);
         assert_eq!(ui.focus.current(), Some(Id::Label));
-        // And the keyboard carries on from where the mouse left it.
+        // And the keyboard carries on from where the mouse left it — including the caret, which
+        // the click put at the column it landed on, eleven cells in.
         press(&mut ui, KeyCode::Char('q'));
-        assert_eq!(ui.label.value(), "LOCAL INTELLIGENCEq", "q is a letter in the field");
+        assert_eq!(ui.label.value(), "LOCAL INTELqLIGENCE", "q is a letter in the field");
     }
 
     #[test]
