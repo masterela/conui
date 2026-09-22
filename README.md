@@ -546,6 +546,22 @@ Nothing in the suite needs a terminal. A `Frame` owns nothing but a `Buffer`, so
 renders into memory and `buffer.row_text(row)` is what the assertions read — which is also what
 `--dump` prints, so the text in this README is checked the same way the tests are.
 
+### Publishing goes in dependency order
+
+`cargo package` rewrites path dependencies into registry ones, so a crate cannot be packaged until
+everything it depends on is already on crates.io. The order is forced:
+
+```sh
+cargo publish -p conui-cell     # unicode-width only
+cargo publish -p conui-input    # no dependencies at all
+cargo publish -p conui-term     # needs conui-cell published
+cargo publish -p conui          # needs all three
+```
+
+The first two can be dry-run at any time — `cargo package -p conui-cell` builds the crate from its
+own tarball, which catches a file the manifest forgot to include. The last two cannot, which is the
+one thing about this layout that costs something.
+
 ## Credit
 
 The visual language — flat cell grid, restrained palette on near-black, block-digit stats,
@@ -555,4 +571,11 @@ that aesthetic, not a port of its code.
 
 ## License
 
-MIT OR Apache-2.0.
+Dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. This is the convention across the Rust ecosystem, so conui imposes no choice a
+project has not already made. Unless you state otherwise, any contribution you intentionally submit
+for inclusion in this work is licensed the same way, with no additional terms.
