@@ -10,10 +10,10 @@
 
 use std::ops::Range;
 
-use conui_cell::{Padding, Rect, Style};
+use conui_cell::{Padding, Pos, Rect, Style};
 
 use crate::canvas::{Canvas, text_width};
-use crate::layout::{Constraint, Direction};
+use crate::layout::{Constraint, Direction, resolve};
 use crate::state::{Dropdown, Editor, Selection, Viewport};
 use crate::theme::Role;
 use crate::typography::{self, BarStyle, DIGIT_HEIGHT, line, mark};
@@ -1095,6 +1095,432 @@ impl View for List<'_> {
                     Rect::new(0, row_offset as u16, width, 1),
                     Style::new().bg(surface),
                 );
+            }
+        }
+    }
+
+    fn constraint(&self, axis: Direction) -> Constraint {
+        let _ = axis;
+        Constraint::Fill(1)
+    }
+}
+
+// ---- Table ------------------------------------------------------------------------------
+
+/// One column of a [`Table`]: what it is called, how wide it is, and which edge its cells sit
+/// against.
+///
+/// A plain string converts into one, so a table of equal, left-aligned columns never names this
+/// type. Reach for the builders when a column holds numbers, which want a fixed width and a right
+/// edge so that a digit lines up with the digit above it.
+///
+/// Prefixed rather than called `Column` because [`Column`](crate::view::Column) is already the
+/// vertical stack, and a table is very often inside one — two types of that name in a file would
+/// have to be renamed at the import, which is a worse place to learn about the clash.
+pub struct TableColumn {
+    heading: String,
+    constraint: Constraint,
+    align: Align,
+}
+
+impl TableColumn {
+    /// A column headed `heading`, taking an equal share of the width, text against the left.
+    pub fn new(heading: impl Into<String>) -> Self {
+        Self { heading: heading.into(), constraint: Constraint::Fill(1), align: Align::Left }
+    }
+
+    /// Exactly this many cells, whatever the table is given. What a column of numbers wants, since
+    /// its width is decided by the widest figure it will ever hold rather than by the window.
+    pub fn length(mut self, columns: u16) -> Self {
+        self.constraint = Constraint::Length(columns);
+        self
+    }
+
+    /// Take a share of whatever the fixed columns leave, weighted against the other flexible ones.
+    /// The default, at weight 1.
+    pub fn flex(mut self, weight: u16) -> Self {
+        self.constraint = Constraint::Fill(weight);
+        self
+    }
+
+    /// At least this many cells, and more if any is going spare.
+    pub fn at_least(mut self, columns: u16) -> Self {
+        self.constraint = Constraint::Min(columns);
+        self
+    }
+
+    /// Which edge the cells sit against. The heading goes the same way, because a heading that
+    /// does not sit over its own figures is worse than no heading.
+    pub fn align(mut self, align: Align) -> Self {
+        self.align = align;
+        self
+    }
+
+    /// Against the right edge — for a column of numbers, and the reason this is worth a shorthand.
+    pub fn right(self) -> Self {
+        self.align(Align::Right)
+    }
+}
+
+impl From<&str> for TableColumn {
+    fn from(heading: &str) -> Self {
+        Self::new(heading)
+    }
+}
+
+impl From<String> for TableColumn {
+    fn from(heading: String) -> Self {
+        Self::new(heading)
+    }
+}
+
+/// One row of a [`Table`]: a cell per column.
+///
+/// Cells past the last column are not drawn, and columns past the last cell are left blank — a row
+/// that does not match the header is a bug in the caller, and a panic in a draw is a worse way to
+/// report it than a gap on screen.
+pub struct TableRow {
+    cells: Vec<String>,
+    role: Option<Role>,
+}
+
+impl TableRow {
+    /// A row of `cells`, in the table's own colour.
+    pub fn new<S: Into<String>>(cells: impl IntoIterator<Item = S>) -> Self {
+        Self { cells: cells.into_iter().map(Into::into).collect(), role: None }
+    }
+
+    /// Colour this row differently from the rest — a failing check, a stale entry, a dead process.
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = Some(role);
+        self
+    }
+}
+
+impl<S: Into<String>> From<Vec<S>> for TableRow {
+    fn from(cells: Vec<S>) -> Self {
+        Self::new(cells)
+    }
+}
+
+/// What a click on a [`Table`] landed on.
+///
+/// The two answers are different questions — one sorts, one selects — and a table is the only thing
+/// that can tell them apart, because it alone knows where its heading ends and how wide each column
+/// came out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableHit {
+    /// The heading of this column, by index. Which is how a table gets click-to-sort.
+    Heading(usize),
+    /// This row, by index into the rows given — not into the ones on screen.
+    Row(usize),
+}
+
+/// A grid of cells under a heading, one row of which may be selected.
+///
+/// The difference between this and a [`List`] of pre-formatted strings is that the widths are stated
+/// once and everything else follows from them. The heading sits over its own figures because it is
+/// placed by the same numbers the cells are; a click resolves to a column because the widths are
+/// still in hand when the question is asked; and a cell of Japanese does not shove the column to its
+/// right, because the placement measures display width rather than counting characters — which
+/// `format!("{:>7}")` cannot do.
+///
+/// Columns divide the width by [`resolve`], the same function a [`Row`](crate::view::Row) uses, so
+/// `Length` columns are honoured first and `Fill` absorbs the rest. As with [`List`], the cursor and
+/// scroll position live in a [`Selection`] you own; the window follows the cursor because only the
+/// widget knows the height it has to fit.
+///
+/// ```
+/// use conui::widget::{Table, TableColumn};
+/// use conui::Selection;
+///
+/// let selection = Selection::new();
+/// let table = Table::new([
+///         TableColumn::new("PID").length(7).right(),
+///         TableColumn::new("CPU%").length(6).right(),
+///         TableColumn::new("COMMAND"),
+///     ])
+///     .rows([vec!["4821", "62.0", "cargo"], vec!["4832", "58.0", "rustc"]])
+///     .selection(&selection)
+///     .sorted_by(1, true);
+/// ```
+pub struct Table<'a> {
+    columns: Vec<TableColumn>,
+    rows: Vec<TableRow>,
+    selection: Option<&'a Selection>,
+    marker: String,
+    gap: u16,
+    role: Role,
+    selected_role: Role,
+    heading_role: Role,
+    highlight: bool,
+    empty: Option<String>,
+    sorted_by: Option<(usize, bool)>,
+}
+
+impl<'a> Table<'a> {
+    /// A table with these columns and no rows yet. Strings convert into columns, so an iterator of
+    /// `&str` gives equal, left-aligned ones.
+    pub fn new<C: Into<TableColumn>>(columns: impl IntoIterator<Item = C>) -> Self {
+        Self {
+            columns: columns.into_iter().map(Into::into).collect(),
+            rows: Vec::new(),
+            selection: None,
+            marker: format!("{} ", mark::SELECTED),
+            gap: 1,
+            role: Role::Text,
+            selected_role: Role::Accent,
+            heading_role: Role::Muted,
+            highlight: false,
+            empty: None,
+            sorted_by: None,
+        }
+    }
+
+    /// The rows to draw, a `Vec` of cells each, or [`TableRow`]s where a row wants its own colour.
+    pub fn rows<R: Into<TableRow>>(mut self, rows: impl IntoIterator<Item = R>) -> Self {
+        self.rows = rows.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Draw a cursor on the row this selection points at, and scroll to keep it in view.
+    pub fn selection(mut self, selection: &'a Selection) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
+    /// The cursor drawn against the selected row. Its width indents every row and the heading
+    /// alike, so moving the selection never shifts a column sideways.
+    pub fn marker(mut self, marker: impl Into<String>) -> Self {
+        self.marker = marker.into();
+        self
+    }
+
+    /// Cells between one column and the next. One by default, which is the least that still reads
+    /// as a gap; zero is right for columns that are already separated by their contents.
+    pub fn gap(mut self, cells: u16) -> Self {
+        self.gap = cells;
+        self
+    }
+
+    /// Colour of an ordinary cell. A row's own [`TableRow::role`] wins over this.
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Colour of the selected row and its marker. Wins over a row's own role, for the reason
+    /// [`List::selected_role`] gives: a cursor that vanishes on some rows is worse than a row that
+    /// loses its colour while it is under the cursor.
+    pub fn selected_role(mut self, role: Role) -> Self {
+        self.selected_role = role;
+        self
+    }
+
+    /// Colour of the heading row. Muted by default, because a heading is read once and the figures
+    /// under it are read every frame.
+    pub fn heading_role(mut self, role: Role) -> Self {
+        self.heading_role = role;
+        self
+    }
+
+    /// Also lift the selected row onto the theme's surface colour.
+    pub fn highlight(mut self) -> Self {
+        self.highlight = true;
+        self
+    }
+
+    /// What to say when there are no rows. The heading still draws, because the columns are still
+    /// true; an empty table with no message is indistinguishable from a broken one.
+    pub fn empty(mut self, message: impl Into<String>) -> Self {
+        self.empty = Some(message.into());
+        self
+    }
+
+    /// Mark a column as the one the rows are sorted by, with an arrow saying which way.
+    ///
+    /// The table does no sorting — the order of the rows is whatever you passed. This only says so
+    /// on screen, which is the half a widget can honestly do.
+    pub fn sorted_by(mut self, column: usize, descending: bool) -> Self {
+        self.sorted_by = Some((column, descending));
+        self
+    }
+
+    /// How many rows the table holds — all of them, not just the visible ones. The number to pass
+    /// to [`Selection::clamp`](crate::state::Selection::clamp) after the data changed underneath.
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether there are no rows, in which case the [`empty`](Self::empty) message is what draws.
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Rows of heading. One, always: a table without a heading is a [`List`], and the column widths
+    /// are the only reason to reach for this instead.
+    const HEADING_HEIGHT: u16 = 1;
+
+    /// Width of the cursor gutter, which is zero without a selection to draw one for.
+    fn gutter(&self) -> u16 {
+        if self.selection.is_some() { text_width(&self.marker) } else { 0 }
+    }
+
+    /// The width each column came out at, for a table `width` cells across.
+    fn widths(&self, width: u16) -> Vec<u16> {
+        let constraints: Vec<Constraint> = self.columns.iter().map(|c| c.constraint).collect();
+        resolve(&constraints, width.saturating_sub(self.gutter()), self.gap)
+    }
+
+    /// A heading, with the sort arrow on it if this is the sorted column.
+    fn heading(&self, index: usize) -> String {
+        let column = &self.columns[index];
+        match self.sorted_by {
+            Some((sorted, descending)) if sorted == index => {
+                let arrow = if descending { mark::ARROW_DOWN } else { mark::ARROW_UP };
+                format!("{} {}", column.heading, arrow)
+            }
+            _ => column.heading.clone(),
+        }
+    }
+
+    /// What a click at `pos` landed on, given the `area` the table was drawn in.
+    ///
+    /// Record the area with [`.hit(..)`](crate::view::ViewExt::hit) while composing the frame and
+    /// ask this when the click arrives — the same shape as [`Selection::row_at`], and for the same
+    /// reason: only the frame that was drawn knows where anything ended up.
+    ///
+    /// A click in the cursor gutter counts as the first column rather than as nothing. The gutter is
+    /// two cells directly left of a heading, aiming at a heading is a coarse gesture, and a dead
+    /// strip that silently does nothing is the worse of the two answers.
+    pub fn hit_at(&self, area: Rect, pos: Pos) -> Option<TableHit> {
+        if !area.contains(pos) || self.columns.is_empty() {
+            return None;
+        }
+        if pos.y == area.y {
+            let local = pos.x.saturating_sub(area.x + self.gutter());
+            let mut edge = 0u16;
+            for (index, width) in self.widths(area.width).iter().enumerate() {
+                edge = edge.saturating_add(width.saturating_add(self.gap));
+                if local < edge {
+                    return Some(TableHit::Heading(index));
+                }
+            }
+            // Past the last boundary is the last column, which is where the eye puts it: the right
+            // edge of a table belongs to whatever column reaches it.
+            return Some(TableHit::Heading(self.columns.len() - 1));
+        }
+        let selection = self.selection?;
+        let body = Rect::new(
+            area.x,
+            area.y.saturating_add(Self::HEADING_HEIGHT),
+            area.width,
+            area.height.saturating_sub(Self::HEADING_HEIGHT),
+        );
+        selection.row_at(body, pos, self.rows.len()).map(TableHit::Row)
+    }
+}
+
+/// Place `text` within a column `width` wide starting at `x`, against the edge `align` names.
+///
+/// Measured in display width rather than characters, which is the whole reason a table is a widget
+/// and not a `format!`: `{:>9}` pads a two-cell ideograph as though it were one column wide, and
+/// every column to its right ends up one cell out.
+fn place(
+    canvas: &mut Canvas<'_>,
+    x: u16,
+    y: i32,
+    text: &str,
+    width: u16,
+    align: Align,
+    role: Role,
+) {
+    let slack = width.saturating_sub(text_width(text));
+    let indent = match align {
+        Align::Left => 0,
+        Align::Center => slack / 2,
+        Align::Right => slack,
+    };
+    canvas.put_truncated(i32::from(x + indent), y, text, width - indent, role);
+}
+
+impl View for Table<'_> {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let (width, height) = (canvas.width(), canvas.height());
+        if width == 0 || height == 0 || self.columns.is_empty() {
+            return;
+        }
+
+        let gutter = self.gutter();
+        let widths = self.widths(width);
+        let mut offsets = Vec::with_capacity(widths.len());
+        let mut x = gutter;
+        for width in &widths {
+            offsets.push(x);
+            x = x.saturating_add(width.saturating_add(self.gap));
+        }
+
+        for index in 0..self.columns.len() {
+            place(
+                canvas,
+                offsets[index],
+                0,
+                &self.heading(index),
+                widths[index],
+                self.columns[index].align,
+                self.heading_role,
+            );
+        }
+
+        let body = height.saturating_sub(Self::HEADING_HEIGHT);
+        if body == 0 {
+            return;
+        }
+        if self.rows.is_empty() {
+            if let Some(message) = &self.empty {
+                canvas.put_truncated(
+                    i32::from(gutter),
+                    1,
+                    message,
+                    width - gutter.min(width),
+                    Role::Muted,
+                );
+            }
+            return;
+        }
+
+        let selected = self.selection.map(Selection::selected);
+        let window = match self.selection {
+            Some(selection) => selection.window(body, self.rows.len()),
+            None => 0..usize::from(body).min(self.rows.len()),
+        };
+
+        for (row_offset, index) in window.enumerate() {
+            let row = &self.rows[index];
+            let y = i32::from(Self::HEADING_HEIGHT) + row_offset as i32;
+            let is_selected = selected == Some(index);
+
+            if is_selected && gutter > 0 {
+                canvas.put(0, y, &self.marker, self.selected_role);
+            }
+            let role = if is_selected { self.selected_role } else { row.role.unwrap_or(self.role) };
+            for (column, cell) in row.cells.iter().enumerate().take(widths.len()) {
+                place(
+                    canvas,
+                    offsets[column],
+                    y,
+                    cell,
+                    widths[column],
+                    self.columns[column].align,
+                    role,
+                );
+            }
+
+            // Last, for the reason `List` gives: every write above sets a background of its own.
+            if is_selected && self.highlight {
+                let surface = canvas.theme().surface;
+                let row = Rect::new(0, Self::HEADING_HEIGHT + row_offset as u16, width, 1);
+                canvas.style_area(row, Style::new().bg(surface));
             }
         }
     }
@@ -2215,6 +2641,184 @@ mod tests {
             for height in 0..3u16 {
                 let list = List::new(["a", "b", "c"]).selection(&selection).highlight();
                 let _ = rows(&list, width, height);
+            }
+        }
+    }
+
+    // ---- Table --------------------------------------------------------------------------
+
+    #[test]
+    fn a_table_puts_each_heading_over_its_own_column() {
+        let table =
+            Table::new([TableColumn::new("PID").length(4).right(), TableColumn::new("NAME")])
+                .rows([vec!["42", "cargo"]]);
+        assert_eq!(rows(&table, 12, 2), [" PID NAME   ", "  42 cargo  "]);
+        assert_eq!(table.constraint(Direction::Vertical), Constraint::Fill(1));
+        assert_eq!(table.constraint(Direction::Horizontal), Constraint::Fill(1));
+    }
+
+    #[test]
+    fn a_right_aligned_column_lines_its_digits_up() {
+        // The whole point of stating a width: 124.0 and 7.0 have their decimal points in the same
+        // column, which is the difference between a table of figures and a list of strings.
+        let table =
+            Table::new([TableColumn::new("CPU%").length(6).right(), TableColumn::new("COMMAND")])
+                .rows([vec!["124.0", "kernel_task"], vec!["7.0", "mds"]]);
+        assert_eq!(rows(&table, 14, 3), ["  CPU% COMMAND", " 124.0 kernel…", "   7.0 mds    "]);
+    }
+
+    #[test]
+    fn a_wide_character_does_not_shove_the_column_to_its_right() {
+        // Why this is a widget and not a `format!`: padding is measured in cells, not characters.
+        let table = Table::new([TableColumn::new("A").length(4), TableColumn::new("B")])
+            .rows([vec!["日本", "x"], vec!["ab", "y"]]);
+        let drawn = rows(&table, 9, 3);
+        let column = |row: &str, needle: &str| {
+            row.find(needle).map(|byte| text_width(&row[..byte])).expect("row should contain it")
+        };
+        assert_eq!(column(&drawn[1], "x"), column(&drawn[2], "y"));
+        assert_eq!(text_width(&format!("{:<4}", "日本")), 6, "and this is what `format!` costs");
+    }
+
+    #[test]
+    fn a_selection_marks_its_row_and_indents_the_heading_along_with_it() {
+        let selection = Selection::at(1);
+        let table = Table::new([TableColumn::new("N").length(3).right(), TableColumn::new("WHAT")])
+            .rows([vec!["1", "one"], vec!["2", "two"]])
+            .selection(&selection);
+        assert_eq!(rows(&table, 12, 3), ["    N WHAT  ", "    1 one   ", "›   2 two   "]);
+    }
+
+    #[test]
+    fn the_sorted_column_wears_an_arrow_saying_which_way() {
+        let columns = || {
+            [TableColumn::new("PID").length(4).right(), TableColumn::new("CPU%").length(6).right()]
+        };
+        assert_eq!(row(&Table::new(columns()).sorted_by(1, true), 11), " PID CPU% ↓");
+        assert_eq!(row(&Table::new(columns()).sorted_by(1, false), 11), " PID CPU% ↑");
+        // An arrow costs two cells, so a six-wide column of percentages still fits its heading.
+        assert_eq!(row(&Table::new(columns()), 11), " PID   CPU%");
+    }
+
+    #[test]
+    fn a_table_scrolls_its_body_and_leaves_the_heading_where_it_is() {
+        let selection = Selection::at(3);
+        let table = Table::new(["N"])
+            .rows([vec!["a"], vec!["b"], vec!["c"], vec!["d"]])
+            .selection(&selection);
+        assert_eq!(rows(&table, 5, 3), ["  N  ", "  c  ", "› d  "]);
+    }
+
+    #[test]
+    fn a_click_on_the_heading_names_a_column() {
+        let selection = Selection::at(0);
+        let table = Table::new([
+            TableColumn::new("PID").length(4),
+            TableColumn::new("CPU%").length(6),
+            TableColumn::new("COMMAND"),
+        ])
+        .rows([vec!["1", "2", "three"]])
+        .selection(&selection);
+        // Two cells of gutter, then columns four, six and the ten that are left.
+        let area = Rect::new(0, 0, 24, 4);
+        let at = |x| table.hit_at(area, Pos::new(x, 0));
+        assert_eq!(at(0), Some(TableHit::Heading(0)), "the cursor gutter, not nothing");
+        assert_eq!(at(3), Some(TableHit::Heading(0)));
+        assert_eq!(at(6), Some(TableHit::Heading(0)), "and the gap on its right");
+        assert_eq!(at(7), Some(TableHit::Heading(1)));
+        assert_eq!(at(14), Some(TableHit::Heading(2)));
+        assert_eq!(at(23), Some(TableHit::Heading(2)), "out to the last cell");
+        assert_eq!(table.hit_at(area, Pos::new(24, 0)), None, "but not past the area");
+    }
+
+    #[test]
+    fn a_click_below_the_heading_names_a_row() {
+        let selection = Selection::at(0);
+        let table =
+            Table::new(["A", "B"]).rows([vec!["1", "a"], vec!["2", "b"]]).selection(&selection);
+        let area = Rect::new(2, 3, 10, 4);
+        assert_eq!(table.hit_at(area, Pos::new(4, 3)), Some(TableHit::Heading(0)), "the heading");
+        assert_eq!(table.hit_at(area, Pos::new(4, 4)), Some(TableHit::Row(0)));
+        assert_eq!(table.hit_at(area, Pos::new(4, 5)), Some(TableHit::Row(1)));
+        assert_eq!(table.hit_at(area, Pos::new(4, 6)), None, "past the last row");
+        assert_eq!(table.hit_at(area, Pos::new(4, 9)), None, "outside the area");
+    }
+
+    #[test]
+    fn a_click_lands_on_the_row_it_looks_like_even_when_the_table_is_scrolled() {
+        // The index is into the rows given, not into the ones on screen, which is the only answer
+        // the caller can do anything with.
+        let selection = Selection::at(3);
+        let table = Table::new(["N"])
+            .rows([vec!["a"], vec!["b"], vec!["c"], vec!["d"]])
+            .selection(&selection);
+        let area = Rect::new(0, 0, 5, 3);
+        let _ = rows(&table, 5, 3); // The window is only known once it has been drawn.
+        assert_eq!(table.hit_at(area, Pos::new(2, 1)), Some(TableHit::Row(2)));
+        assert_eq!(table.hit_at(area, Pos::new(2, 2)), Some(TableHit::Row(3)));
+    }
+
+    #[test]
+    fn an_empty_table_keeps_its_columns_and_says_why_it_is_empty() {
+        let table = Table::new([TableColumn::new("PID").length(4), TableColumn::new("NAME")])
+            .rows(Vec::<Vec<String>>::new())
+            .empty("no processes");
+        assert!(table.is_empty());
+        // The heading still draws: the columns are still true, and a table with neither a row nor
+        // a reason is indistinguishable from one that failed to draw.
+        assert_eq!(rows(&table, 14, 2), ["PID  NAME     ", "no processes  "]);
+    }
+
+    #[test]
+    fn a_row_that_does_not_match_the_heading_leaves_a_gap_rather_than_panicking() {
+        let table = Table::new([TableColumn::new("A").length(2), TableColumn::new("B").length(2)])
+            .rows([vec!["1"], vec!["1", "2", "3"]]);
+        assert_eq!(rows(&table, 5, 3), ["A  B ", "1    ", "1  2 "]);
+    }
+
+    #[test]
+    fn a_table_rows_own_role_survives_unless_it_is_selected() {
+        let selection = Selection::at(1);
+        let table = Table::new(["WHAT"])
+            .rows([
+                TableRow::new(["done"]).role(Role::Dim),
+                TableRow::new(["todo"]).role(Role::Dim),
+            ])
+            .selection(&selection)
+            .selected_role(Role::Warn);
+        let mut buffer = Buffer::new(8, 3);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        table.render(&mut canvas);
+        assert_eq!(buffer.get(2, 1).unwrap().style.fg, Some(Theme::LAYA.dim), "keeps its own");
+        assert_eq!(buffer.get(2, 2).unwrap().style.fg, Some(Theme::LAYA.warn), "except selected");
+    }
+
+    #[test]
+    fn a_highlight_paints_the_selected_row_and_nothing_above_it() {
+        let selection = Selection::at(0);
+        let table =
+            Table::new(["A"]).rows([vec!["x"], vec!["y"]]).selection(&selection).highlight();
+        let mut buffer = Buffer::new(8, 3);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        table.render(&mut canvas);
+        let bg = |x, y| buffer.get(x, y).unwrap().style.bg;
+        assert_eq!(bg(7, 1), Some(Theme::LAYA.surface), "past the end of the selected row");
+        assert_ne!(bg(7, 0), Some(Theme::LAYA.surface), "never the heading");
+        assert_ne!(bg(7, 2), Some(Theme::LAYA.surface), "nor another row");
+    }
+
+    #[test]
+    fn a_table_in_a_region_too_small_to_draw_does_not_panic() {
+        let selection = Selection::at(2);
+        for width in 0..6u16 {
+            for height in 0..3u16 {
+                let table =
+                    Table::new([TableColumn::new("PID").length(4).right(), TableColumn::new("N")])
+                        .rows([vec!["1", "a"], vec!["2", "b"], vec!["3", "c"]])
+                        .selection(&selection)
+                        .highlight();
+                let _ = rows(&table, width, height);
+                let _ = table.hit_at(Rect::new(0, 0, width, height), Pos::new(0, 0));
             }
         }
     }

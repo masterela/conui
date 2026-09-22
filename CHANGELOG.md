@@ -23,6 +23,19 @@ First release.
 Four dependencies in the whole tree: `unicode-width`, `unicode-segmentation`, `rustix` on Unix and
 `windows-sys` on Windows. No TUI framework underneath it.
 
+### `Table`
+
+`conui::widget::Table` — columns stated once as `Constraint`s, and the heading, the cells and the
+answer to "which column was clicked" all derived from the same resolved widths. Added because the
+`monitor` example had hand-rolled all three out of `format!("{:>7}")` and three `const`s, and the
+three could drift apart without the compiler noticing.
+
+Two things fall out of it that the hand-rolled version could not have. Cells are placed by display
+width, so a process named in Japanese no longer pushes every column to its right out by one cell per
+ideograph — `{:>7}` counts characters and cannot know. And `Table::hit_at` returns
+`TableHit::Heading(i)` or `TableHit::Row(i)` from one call, replacing a `column_at` function, a
+`Selection::row_at` call and the caller's own arithmetic about how far the heading was indented.
+
 ### Four examples, each of which tests itself
 
 `snake`, `todo`, `settings` and `monitor` — the last a process monitor that reads a real machine on

@@ -260,7 +260,7 @@ fn place(canvas: &mut Canvas<'_>, x: u16, y: u16, w: u16, h: u16, view: &dyn Vie
 | | |
 |---|---|
 | Layout | `Constraint::{Length, Percentage, Ratio, Min, Max, Fill}`, `Row`, `Column`, `Spacer`, `Padded`, `Scroll`, `centered` |
-| Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Input`, `Button`, `Tabs`, `Select`, `Menu`, `Scrollbar` |
+| Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Table`, `Input`, `Button`, `Tabs`, `Select`, `Menu`, `Scrollbar` |
 | State | `Selection` (cursor, its own scroll offset, and the height it was drawn at), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed), `Hits<T>` (where each control landed), `Viewport` (how far a pane with no cursor has been scrolled) |
 | Combinators | `.flex`, `.length`, `.percent`, `.ratio`, `.at_least`, `.at_most`, `.padded`, `.hit`, `.fit` |
 | Escapes | `Paint(closure)`, `When`, and the raw `Canvas` |
@@ -482,7 +482,9 @@ Resolving *within* a control is the widget's own business, and each one that nee
 one measurement only it can make: `Tabs::index_at` (a click in the gap between two labels belongs to
 neither), `Selection::row_at` (which reads the offset the last window recorded, because a row number
 means nothing without knowing how far the list had scrolled), `List::text_column` (left of it is the
-tick, and clicking a task's tick is how you tick it), `Editor::view_from` paired with
+tick, and clicking a task's tick is how you tick it), `Table::hit_at` (one call answers "heading, so
+sort" or "row, so select", because the table is the only thing that knows where its columns came out),
+`Editor::view_from` paired with
 `Editor::set_cursor_column` (a click in a text field is a caret position, and a field narrower than
 its text has scrolled — so the same rule that decided what to draw decides what was clicked, which is
 why it belongs to the editor rather than to the widget), and `Dropdown::handle_mouse`, which takes
