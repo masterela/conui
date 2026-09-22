@@ -29,8 +29,9 @@
 //! ```
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use conui::state::{Editor, Selection};
 use conui::view::{Column, Row, Spacer, View, ViewExt};
@@ -50,7 +51,19 @@ const SIDEBAR: u16 = 24;
 /// Columns the full key legend needs. Below this the footer shows the short one instead.
 const FULL_LEGEND: u16 = 71;
 
-fn main() -> io::Result<()> {
+/// Returning `io::Result` from `main` would print the error with `Debug`, wrapping the sentence the
+/// user needs in `Error: Custom { .. }`. This prints the sentence.
+fn main() -> ExitCode {
+    match dispatch() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("todo: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn dispatch() -> io::Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match arguments.first().map(String::as_str) {
         Some("--help" | "-h") => {
@@ -103,9 +116,12 @@ fn dump(width: u16, height: u16) {
     let mut buffer = Buffer::new(width, height);
     let mut frame = Frame::new(&mut buffer, Theme::LAYA);
     compose(&mut frame, &todo);
-    for row in 0..height {
-        println!("{}", buffer.row_text(row).trim_end());
-    }
+    // One write rather than a `println!` per row, because `println!` unwraps: `--dump | head -3`
+    // would abort with `Broken pipe`, and a dump prints text precisely so it can be piped. A
+    // reader that stops reading is a normal end to this, not a failure.
+    let text: String =
+        (0..height).map(|row| format!("{}\n", buffer.row_text(row).trim_end())).collect();
+    let _ = io::stdout().write_all(text.as_bytes());
 }
 
 // ---- The screen -------------------------------------------------------------------------

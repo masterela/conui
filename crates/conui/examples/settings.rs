@@ -41,7 +41,8 @@
 //! ```
 
 use std::cell::Cell;
-use std::io;
+use std::io::{self, Write};
+use std::process::ExitCode;
 
 use conui::view::{Column, Paint, Row, Scroll, Spacer, ViewExt};
 use conui::widget::{
@@ -204,7 +205,19 @@ const BARS: [&str; 4] = ["Rule", "Shaded", "Blocks", "Smooth"];
 const DENSITY: [&str; 3] = ["Compact", "Comfortable", "Spacious"];
 const SIDEBAR: [&str; 3] = ["Left", "Right", "Hidden"];
 
-fn main() -> io::Result<()> {
+/// Returning `io::Result` from `main` would print the error with `Debug`, wrapping the sentence the
+/// user needs in `Error: Custom { .. }`. This prints the sentence.
+fn main() -> ExitCode {
+    match dispatch() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("settings: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn dispatch() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--help" | "-h") => {
@@ -263,9 +276,12 @@ fn dump(width: u16, height: u16, open: bool, tab: usize) {
     let mut buffer = Buffer::new(width, height);
     let mut frame = Frame::new(&mut buffer, ui.theme());
     ui.compose(&mut frame);
-    for row in 0..buffer.height() {
-        println!("{}", buffer.row_text(row).trim_end());
-    }
+    // One write rather than a `println!` per row, because `println!` unwraps: `--dump | head -3`
+    // would abort with `Broken pipe`, and a dump prints text precisely so it can be piped. A
+    // reader that stops reading is a normal end to this, not a failure.
+    let text: String =
+        (0..buffer.height()).map(|row| format!("{}\n", buffer.row_text(row).trim_end())).collect();
+    let _ = io::stdout().write_all(text.as_bytes());
 }
 
 // ---- The screen --------------------------------------------------------------------------

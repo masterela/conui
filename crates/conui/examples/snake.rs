@@ -17,7 +17,8 @@
 //!   telemetry rows, [`Hints`] for the footer. The two layers share one buffer and one theme.
 
 use std::collections::VecDeque;
-use std::io;
+use std::io::{self, Write};
+use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use conui::view::View;
@@ -52,7 +53,19 @@ const PANEL_WIDTH: u16 = 33;
 
 const HEAD_COLOR: Color = Color::hex("#dcfff0");
 
-fn main() -> io::Result<()> {
+/// Returning `io::Result` from `main` would print the error with `Debug`, wrapping the sentence the
+/// user needs in `Error: Custom { .. }`. This prints the sentence.
+fn main() -> ExitCode {
+    match run() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("snake: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> io::Result<()> {
     // `--dump [steps]` prints one composed frame as plain text and exits. Useful for a README,
     // for a diff against the reference design, and for checking the layout without a terminal.
     let mut args = std::env::args().skip(1);
@@ -102,9 +115,12 @@ fn dump(steps: usize) {
     let mut buffer = conui::Buffer::new(LAYOUT_WIDTH, LAYOUT_HEIGHT);
     let mut frame = Frame::new(&mut buffer, Theme::LAYA);
     compose(&mut frame, &session);
-    for row in 0..LAYOUT_HEIGHT {
-        println!("{}", buffer.row_text(row));
-    }
+    // One write rather than a `println!` per row, because `println!` unwraps: `--dump | head -3`
+    // would abort with `Broken pipe`, and a dump prints text precisely so it can be piped. A
+    // reader that stops reading is a normal end to this, not a failure.
+    let text: String =
+        (0..LAYOUT_HEIGHT).map(|row| format!("{}\n", buffer.row_text(row))).collect();
+    let _ = io::stdout().write_all(text.as_bytes());
 }
 
 // ---- The frame ---------------------------------------------------------------------------

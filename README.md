@@ -83,7 +83,7 @@ Tasks persist as a markdown checklist in `$CONUI_TODO_FILE`, or `~/.conui-todo.m
 clickable, and clicking a task's tick ticks it — resolved against where the list drew itself last
 frame, which is the only thing that knows how far it had scrolled. It is a real program in under 700
 lines, and its own `#[cfg(test)]` module drives the actual key and mouse handlers and asserts on
-rendered rows — 26 tests, no terminal involved.
+rendered rows — 27 tests, no terminal involved.
 
 The third demo is the one with controls: a focus ring walked with `Tab`, tabs, buttons, a text
 field, and dropdowns whose lists are drawn over everything else — all of it reachable with the mouse
@@ -125,6 +125,60 @@ that pane opens a find field in the footer and `n` repeats the search: the viewp
 that brings the match into view, and the pane is composed from a table so that the search can count
 the row a word is on — a layout will not tell you that. `--dump` takes `--open` and `--tab N` so any
 state of it can be printed as text, which is how most of its tests assert on the layout.
+
+The fourth is the one with a job. The other three own everything on their screens, which makes them
+good demonstrations and weak evidence: nothing under them changes unless a key is pressed. This one
+reads the machine once a second.
+
+```
+  CONUI  /  MONITOR                                                 studio.local · up 4d 02:11
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  CPU  ▂▄▆▇▇▇▆▅▄▄▄▃▃▂▂▂▂▂▂▃▃▃▃▃             34%   MEM  ▄▄▄▅▅▅▅▅▅▄▄▄▄▄▄▄▄▅▅▅▅▄▄  9.1 GB / 16 GB
+       ████████░░░░░░░░░░░░░░░░                        █████████████░░░░░░░░░░
+
+  PROCESSES · CPU ↓                                                 MACHINE
+        PID   CPU%       MEM  COMMAND                               CORES                    8
+          0  124.0    1.1 GB  kernel_task                           PROCS                    8
+        182   81.0    742 MB  WindowServer                          SHOWN                    8
+  ›    4821   62.0    205 MB  cargo                                 VIA              a fixture
+       4832   58.0    464 MB  rustc
+        311    7.0     92 MB  mds_stores                            cargo · 4821
+       1204    0.9     12 MB  monitor                               CPU                   62.0
+         97    0.4    6.0 MB  fseventsd                             MEM            205 MB · 1%
+         93      —     31 MB  logd                                  THREADS                  9
+                                                                    STATE              running
+
+  ────────────────────────────────────────────────────────────────────────────────────────────
+  ↑/↓ move  C cpu  M mem  P pid  N name  R reverse  / filter  SPACE pause  Q quit
+```
+
+```sh
+cargo run -p conui --example monitor
+```
+
+Sort by any column with a key or by clicking its heading, `/` to filter by name or pid, `SPACE` to
+freeze the figures while still moving about in them. Two things here that a self-contained demo never
+has to face:
+
+**The list re-sorts under the cursor.** A `Selection` holds a row *index*, and an index is a claim
+about an ordering — so the moment a sample arrives with a process somewhere else, the cursor is on
+something the user never chose. The app keeps a pid instead and re-derives the index after every
+sample, sort and keystroke, which makes the selection a view of the focus rather than a second thing
+to keep in step. Five tests do nothing but move the machine around underneath it.
+
+**Some figures do not exist.** CPU percentage is not a value a machine holds; it is the difference
+between two readings of cumulative CPU time. So it is unknown until the second sample, and unknown
+for ever on a platform with nothing to read — which is why every figure on that screen is an `Option`
+and prints `—` rather than `0.0`. Zero is a claim, and calling a busy process idle is worse than
+admitting to not knowing. `logd` in the frame above is the case, and it sorts to the bottom whichever
+way the column points.
+
+The sampler is `ps`, `vm_stat` and `sysctl` on macOS, `/proc` on Linux and `tasklist` on Windows —
+shelled out to and parsed, because an example that needed a dependency conui does not have would
+misrepresent what the library costs. Windows therefore has no CPU figures at all, which is the same
+`—` path every platform takes for its first second. `--dump` renders a frozen fixture rather than
+this machine, so its output is identical on every platform and something a test can assert on; the
+live parsers are covered by tests that read the machine they are running on, in all three CI jobs.
 
 ## Quick start
 
@@ -549,30 +603,49 @@ A program that only wants "print a table with colour" can depend on `conui-cell`
 | Platform | Status |
 |---|---|
 | macOS | Developed and tested here (Apple Silicon, Darwin 25), and in CI on `macos-latest`. |
-| Linux | Builds and passes the whole suite in CI on `ubuntu-latest`, over the same `rustix` termios path as macOS. Not yet driven interactively in a Linux terminal. |
+| Linux | Builds and passes the whole suite in CI on `ubuntu-latest`, over the same `rustix` termios path as macOS, and the `monitor` example's `/proc` parser is exercised against the runner's own machine. Not yet driven interactively in a Linux terminal. |
 | Windows | `crates/conui-term/src/platform/windows.rs` — `ENABLE_VIRTUAL_TERMINAL_INPUT` and `ENABLE_VIRTUAL_TERMINAL_PROCESSING`, screen-buffer size, a `WaitForSingleObject` readable poll, and mode restore on exit — **compiles, and the whole suite passes**, on `windows-latest` in CI. It has never been driven interactively in a real console, so what remains unproven is the part no headless test can reach: that raw mode, VT mode and the escape output actually behave in conhost, Windows Terminal and PowerShell. |
+
+Every test in this workspace renders into a `Buffer` and asserts on text, which is the right way to
+test a layout and is structurally incapable of testing the handshake itself: raw mode, live input
+decoding, and giving the terminal back. [`docs/terminal-handshake.md`](docs/terminal-handshake.md) is
+the checklist for the part a person has to sit down and do — eight items, about ten minutes per
+machine, with a report template at the end. It is what the two rows above are waiting on.
+
+There is one thing a CI box is better at than a developer's machine, though, and it is the inverse of
+all that: it has no terminal. So the suite ends by running every example with stdin redirected and
+checking each one declines in a sentence — `conui needs an interactive terminal, and stdin is not one`
+— rather than failing at `tcgetattr` and reporting `Os { code: 19, kind: Uncategorized }`, which is
+what it did until a redirect was tried on purpose. `Terminal::enter` refuses when
+`Terminal::is_interactive` is false, so an app gets that for free; check it yourself only when there
+is something better to do than exit, such as a plain-text mode to fall back to. A unit test cannot
+cover this, because a test calling `enter` on a developer's machine would find a real tty and take it
+over mid-suite.
 
 ## Development
 
 ```sh
-cargo test --workspace                  # 426 unit tests + 20 doctests
+cargo test --workspace                  # 435 unit tests + 19 doctests
 cargo test -p conui --example snake     # 35 more: the example tests itself
 cargo test -p conui --example todo      # 27 more
 cargo test -p conui --example settings  # 55 more
+cargo test -p conui --example monitor   # 66 more, three of which read the machine they run on
 cargo run -p conui --example snake
 cargo run -p conui --example todo
 cargo run -p conui --example settings
+cargo run -p conui --example monitor
 cargo fmt --all                         # rustfmt.toml pins use_small_heuristics = "Max"
 cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps   # every public item is documented
 ```
 
-The three lower crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build
-warning rather than something a reader discovers on docs.rs. `conui` itself is getting there a module
-at a time: `app`, `canvas`, `frame`, `layout` and `theme` carry `#[warn(missing_docs)]` and are done,
-`state`, `typography`, `view` and `widget` are not yet. A module with the attribute cannot regress,
-which is the part that matters — the alternative was one enormous change, or a crate-level `allow`
-that would have made the lint decorative.
+All four crates carry `#![warn(missing_docs)]`, so an undocumented public item is a build warning
+rather than something a reader discovers on docs.rs. `conui` got there a module at a time — nine
+changes, each one switching the lint on for a single `pub mod` and writing whatever that module was
+missing — because the alternative was one unreviewable change of 191 doc comments, or a crate-level
+`allow` that would have made the lint decorative. A module that had been through could not regress
+while the others were still being written, which is the part that mattered; now the attribute sits at
+the crate root, where it also covers whatever gets added next.
 
 `.github/workflows/ci.yml` runs exactly those commands on `macos-latest`, `ubuntu-latest` and
 `windows-latest`, plus rustfmt once, rustdoc once and a `1.85` MSRV check — a `rust-version` nothing
