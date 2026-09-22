@@ -41,7 +41,7 @@
 //! ```
 
 use std::cell::Cell;
-use std::io;
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use conui::view::{Column, Paint, Row, Scroll, Spacer, ViewExt};
@@ -276,9 +276,12 @@ fn dump(width: u16, height: u16, open: bool, tab: usize) {
     let mut buffer = Buffer::new(width, height);
     let mut frame = Frame::new(&mut buffer, ui.theme());
     ui.compose(&mut frame);
-    for row in 0..buffer.height() {
-        println!("{}", buffer.row_text(row).trim_end());
-    }
+    // One write rather than a `println!` per row, because `println!` unwraps: `--dump | head -3`
+    // would abort with `Broken pipe`, and a dump prints text precisely so it can be piped. A
+    // reader that stops reading is a normal end to this, not a failure.
+    let text: String =
+        (0..buffer.height()).map(|row| format!("{}\n", buffer.row_text(row).trim_end())).collect();
+    let _ = io::stdout().write_all(text.as_bytes());
 }
 
 // ---- The screen --------------------------------------------------------------------------
