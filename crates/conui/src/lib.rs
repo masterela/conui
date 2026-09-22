@@ -73,7 +73,7 @@ pub use app::{App, Config};
 pub use canvas::{Canvas, text_width};
 pub use frame::Frame;
 pub use layout::{Constraint, Direction, Layout, centered};
-pub use state::{Dropdown, Editor, Focus, Selection};
+pub use state::{Dropdown, Editor, Focus, Hits, Selection};
 pub use theme::{Role, Theme};
 pub use typography::BarStyle;
 pub use view::{View, ViewExt};
@@ -82,5 +82,7 @@ pub use view::{View, ViewExt};
 // `Color` and a `KeyCode`, and making people add three more dependencies to their manifest to
 // name the types their own callbacks receive is a papercut with no upside.
 pub use conui_cell::{self, Buffer, Cell, Color, Padding, Pos, Rect, Style, Symbol};
-pub use conui_input::{self, Event, KeyCode, KeyEvent, Modifiers, MouseEvent, MouseKind};
+pub use conui_input::{
+    self, Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseKind,
+};
 pub use conui_term::{self, Terminal};

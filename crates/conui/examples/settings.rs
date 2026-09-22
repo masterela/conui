@@ -14,14 +14,20 @@
 //! - **The overlay is a second pass.** A view is clipped to its own region and cannot escape it,
 //!   so the open list is not a child of the field. The field records where it landed, and the
 //!   frame draws the list on top afterwards.
+//! - **A click is resolved against last frame.** [`Hits<Id>`] collects where each control landed
+//!   while composing, and the mouse handler asks it what is under the pointer. Focus is declared;
+//!   hit-testing is observed. They are two structures because they answer two different questions.
 //!
-//! Applying really does re-theme the running app, so the buttons are not decoration.
+//! Applying really does re-theme the running app, so the buttons are not decoration. The whole
+//! screen is usable with the mouse as well: click a tab, a field or a button, click a dropdown to
+//! open it, click an option to choose it, click anywhere else to dismiss it.
 //!
 //! ```sh
 //! cargo run -p conui --example settings
 //! cargo run -p conui --example settings -- --dump 88 24
 //! ```
 
+use std::cell::Cell;
 use std::io;
 
 use conui::view::{Column, Paint, Row, Spacer, ViewExt};
@@ -30,8 +36,8 @@ use conui::widget::{
 };
 use conui::widget::{Input, Rule};
 use conui::{
-    App, BarStyle, Buffer, Config, Dropdown, Editor, Event, Focus, Frame, KeyCode, Role, Selection,
-    Style, Theme, View,
+    App, BarStyle, Buffer, Config, Dropdown, Editor, Event, Focus, Frame, Hits, KeyCode,
+    MouseEvent, Pos, Rect, Role, Selection, Style, Theme, View,
 };
 
 const MIN_WIDTH: u16 = 66;
@@ -78,8 +84,9 @@ fn main() -> io::Result<()> {
 
 fn run() -> io::Result<()> {
     let mut ui = Ui::new();
-    let mut app =
-        App::with(Config::new().theme(ui.theme()).fps(20).min_size(MIN_WIDTH, MIN_HEIGHT))?;
+    let mut app = App::with(
+        Config::new().theme(ui.theme()).fps(20).min_size(MIN_WIDTH, MIN_HEIGHT).mouse(true),
+    )?;
 
     while app.is_running() {
         for event in app.poll()? {
@@ -157,6 +164,11 @@ struct Ui {
     saved: Values,
     status: String,
     status_role: Role,
+    /// Where each control landed last frame, so a click can be resolved back to one.
+    hits: Hits<Id>,
+    /// The frame the last compose drew into. A click has to be resolved against the same screen
+    /// the overlay was placed against, and only the draw knows how big that was.
+    screen: Cell<Rect>,
 }
 
 impl Ui {
@@ -179,6 +191,8 @@ impl Ui {
             saved,
             status: String::from("ready"),
             status_role: Role::Muted,
+            hits: Hits::new(),
+            screen: Cell::new(Rect::sized(MIN_WIDTH, MIN_HEIGHT)),
         };
         ui.retarget();
         ui
@@ -249,6 +263,12 @@ impl Ui {
     }
 
     fn revert(&mut self) {
+        // Guarded here rather than at each call site: the button is drawn disabled when there is
+        // nothing to revert, and both `Enter` and a click have to agree with what it looks like.
+        if !self.is_modified() {
+            self.note("nothing to revert", Role::Muted);
+            return;
+        }
         let saved = self.saved.clone();
         self.palette.set_selected(saved.palette);
         self.bars.set_selected(saved.bars);
@@ -318,14 +338,25 @@ impl Ui {
         // included, and nothing below it runs.
         if let Some(id) = self.focus.current() {
             if self.dropdown(id).is_some_and(|(dropdown, _)| dropdown.is_open()) {
+                let len = self.dropdown(id).map_or(0, |(_, options)| options.len());
+                let screen = self.screen.get();
                 if let Some(key) = event.as_key() {
-                    let len = self.dropdown(id).map_or(0, |(_, options)| options.len());
                     if let Some(dropdown) = self.dropdown_mut(id) {
                         dropdown.handle(key, len);
+                    }
+                } else if let Some(mouse) = event.as_mouse() {
+                    // The same rule for the mouse: a click on an option chooses it, a click
+                    // anywhere else dismisses the list and goes no further.
+                    if let Some(dropdown) = self.dropdown_mut(id) {
+                        dropdown.handle_mouse(mouse, len, screen);
                     }
                 }
                 return Flow::Continue;
             }
+        }
+
+        if let Some(mouse) = event.as_mouse() {
+            return self.handle_mouse(mouse);
         }
 
         let Some(key) = event.as_key() else {
@@ -395,9 +426,59 @@ impl Ui {
         Flow::Continue
     }
 
+    /// A click, resolved against where things were drawn last frame.
+    ///
+    /// Only presses are acted on. A wheel does nothing here on purpose: the only scrollable thing
+    /// on this screen is an open dropdown, which never reaches this far, and a form that changes a
+    /// value because the pointer happened to be over it is a bug with a friendly face.
+    fn handle_mouse(&mut self, mouse: &MouseEvent) -> Flow {
+        if !mouse.is_click() {
+            return Flow::Continue;
+        }
+        let at = Pos::new(mouse.column, mouse.row);
+        let Some(id) = self.hits.at(at) else {
+            // Chrome: the header, a rule, the preview panel. Nothing to do, and deliberately not
+            // "clear the focus" — losing your place because you clicked a border would be rude.
+            return Flow::Continue;
+        };
+        // Focus follows the click. Clicking a control is the plainest possible way of saying "talk
+        // to this one", and it means the keyboard picks up exactly where the mouse left off.
+        self.focus.focus(id);
+
+        match id {
+            Id::Tabs => {
+                // Which label, not just "the tab bar": the bar is one region with several targets,
+                // so the widget resolves the column and the caller supplies it.
+                let local = self.hits.local(Id::Tabs, at);
+                if let Some(index) = local.and_then(|local| self.tab_bar().index_at(local.x)) {
+                    self.tab.set_selected(index);
+                    self.retarget();
+                }
+            }
+            Id::Label => {} // Focus only. Placing the caret would want Editor to take a column.
+            Id::Revert => self.revert(),
+            Id::Apply => return self.apply(),
+            select => {
+                let len = self.dropdown(select).map_or(0, |(_, options)| options.len());
+                let screen = self.screen.get();
+                // The dropdown decides what a click on its own field means, the same way it
+                // decides what `Enter` means. The screen only says where the click was.
+                if let Some(dropdown) = self.dropdown_mut(select) {
+                    dropdown.handle_mouse(mouse, len, screen);
+                }
+            }
+        }
+        Flow::Continue
+    }
+
     // ---- Drawing -----------------------------------------------------------------------
 
     fn compose(&self, frame: &mut Frame<'_>) {
+        // Last frame's geometry is gone the moment this one starts. A stale hit points at where a
+        // control used to be, which is the bug that makes a UI feel haunted.
+        self.hits.clear();
+        self.screen.set(frame.area());
+
         let heading = if self.is_modified() { "MODIFIED" } else { "IN SYNC" };
         let screen = Column::new()
             .child(
@@ -406,7 +487,7 @@ impl Ui {
                     .child(Text::new(heading).muted().right().flex(1))
                     .length(1),
             )
-            .child(Tabs::new(TABS).selection(&self.tab).focused(self.focus.is(Id::Tabs)).length(2))
+            .child(self.tab_bar().hit(&self.hits, Id::Tabs).length(2))
             .child(Spacer::new().length(1))
             .child(self.body().flex(1))
             .child(Rule::new().length(1))
@@ -420,6 +501,13 @@ impl Ui {
             let area = dropdown.popup_area(options.len(), frame.area());
             frame.render(&Menu::new(dropdown.selection(), options.iter().copied()), area);
         }
+    }
+
+    /// The tab bar, built once and used twice: composed into the frame, and asked by the click
+    /// handler which label a column belongs to. Two constructions would drift the first time the
+    /// gap changed, and the drift would show up as clicks landing on the wrong tab.
+    fn tab_bar(&self) -> Tabs<'_> {
+        Tabs::new(TABS).selection(&self.tab).focused(self.focus.is(Id::Tabs))
     }
 
     fn body(&self) -> Box<dyn View + '_> {
@@ -480,6 +568,7 @@ impl Ui {
             .child(
                 Select::new(dropdown, options.iter().copied())
                     .focused(self.focus.is(id))
+                    .hit(&self.hits, id)
                     .length(CONTROL_WIDTH),
             )
             .child(Spacer::new().flex(1))
@@ -489,7 +578,12 @@ impl Ui {
     fn label_row(&self) -> impl View + '_ {
         Row::new()
             .child(Text::new("Heading").muted().length(LABEL_WIDTH))
-            .child(Input::new(&self.label).placeholder("untitled").length(CONTROL_WIDTH))
+            .child(
+                Input::new(&self.label)
+                    .placeholder("untitled")
+                    .hit(&self.hits, Id::Label)
+                    .length(CONTROL_WIDTH),
+            )
             .child(Spacer::new().flex(1))
             .length(1)
     }
@@ -502,11 +596,12 @@ impl Ui {
         }
         Row::new()
             .gap(2)
-            .child(revert.length(Button::width("Revert")))
+            .child(revert.hit(&self.hits, Id::Revert).length(Button::width("Revert")))
             .child(
                 Button::new("Apply")
                     .accent()
                     .focused(self.focus.is(Id::Apply))
+                    .hit(&self.hits, Id::Apply)
                     .length(Button::width("Apply")),
             )
             .child(Spacer::new().flex(1))
@@ -592,6 +687,25 @@ mod tests {
         let mut frame = Frame::new(&mut buffer, ui.theme());
         ui.compose(&mut frame);
         (0..buffer.height()).map(|row| buffer.row_text(row)).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Draw, then click where something actually is. Both halves matter: a click resolves against
+    /// last frame's geometry, so a test that skipped the draw would be clicking at an empty screen.
+    fn click_at(ui: &mut Ui, column: u16, row: u16) -> Flow {
+        let _ = screen(ui, 88, 24);
+        ui.handle(&Event::Mouse(MouseEvent {
+            kind: conui::MouseKind::Down(conui::MouseButton::Left),
+            column,
+            row,
+            modifiers: conui::Modifiers::NONE,
+        }))
+    }
+
+    /// The middle of a control, from where it drew itself.
+    fn centre_of(ui: &mut Ui, id: Id) -> (u16, u16) {
+        let _ = screen(ui, 88, 24);
+        let area = ui.hits.area_of(id).unwrap_or_else(|| panic!("{id:?} did not draw"));
+        (area.x + area.width / 2, area.y + area.height / 2)
     }
 
     // ---- Focus ---------------------------------------------------------------------------
@@ -802,6 +916,105 @@ mod tests {
         let above = ui.sidebar.popup_area(SIDEBAR.len(), screen_area);
         assert!(above.bottom() <= screen_area.bottom(), "the list ran off the bottom: {above:?}");
         assert!(above.y < screen_area.bottom() - 1, "the list did not flip above the field");
+    }
+
+    // ---- Mouse ---------------------------------------------------------------------------
+
+    #[test]
+    fn clicking_a_control_moves_focus_to_it() {
+        let mut ui = Ui::new();
+        assert_eq!(ui.focus.current(), Some(Id::Tabs));
+        let (x, y) = centre_of(&mut ui, Id::Label);
+        click_at(&mut ui, x, y);
+        assert_eq!(ui.focus.current(), Some(Id::Label));
+        // And the keyboard carries on from where the mouse left it.
+        press(&mut ui, KeyCode::Char('q'));
+        assert_eq!(ui.label.value(), "LOCAL INTELLIGENCEq", "q is a letter in the field");
+    }
+
+    #[test]
+    fn clicking_a_tab_label_selects_that_tab_and_a_gap_selects_nothing() {
+        let mut ui = Ui::new();
+        let _ = screen(&ui, 88, 24);
+        let bar = ui.hits.area_of(Id::Tabs).expect("the tab bar drew");
+        // "APPEARANCE" is ten columns, then three of gap, then "LAYOUT".
+        click_at(&mut ui, bar.x + 14, bar.y);
+        assert_eq!(ui.tab.selected(), 1);
+        assert_eq!(ui.focus.ring(), &[Id::Tabs, Id::Density, Id::Sidebar, Id::Revert, Id::Apply]);
+
+        click_at(&mut ui, bar.x + 11, bar.y);
+        assert_eq!(ui.tab.selected(), 1, "the gap between labels belongs to neither");
+    }
+
+    #[test]
+    fn clicking_a_select_opens_it_and_clicking_an_option_chooses_it() {
+        let mut ui = Ui::new();
+        let (x, y) = centre_of(&mut ui, Id::Bars);
+        click_at(&mut ui, x, y);
+        assert!(ui.bars.is_open());
+        assert_eq!(ui.focus.current(), Some(Id::Bars));
+
+        // The list is drawn below the field with a row of border, so option 3 is three rows down.
+        let popup = ui.bars.popup_area(BARS.len(), Rect::sized(88, 24));
+        click_at(&mut ui, popup.x + 2, popup.y + 1 + 3);
+        assert!(!ui.bars.is_open());
+        assert_eq!(ui.bars.selected(), 3, "Smooth");
+    }
+
+    #[test]
+    fn clicking_outside_an_open_list_dismisses_it_without_reaching_what_is_under_the_pointer() {
+        let mut ui = Ui::new();
+        let (x, y) = centre_of(&mut ui, Id::Palette);
+        click_at(&mut ui, x, y);
+        assert!(ui.palette.is_open());
+
+        // Straight at the Apply button, which must not fire: the list is modal, for the mouse
+        // exactly as much as for the keyboard.
+        let (apply_x, apply_y) = centre_of(&mut ui, Id::Apply);
+        let flow = click_at(&mut ui, apply_x, apply_y);
+        assert_eq!(flow, Flow::Continue, "Apply must not have been pressed");
+        assert!(!ui.palette.is_open());
+        assert_eq!(ui.focus.current(), Some(Id::Palette), "and focus stayed put");
+    }
+
+    #[test]
+    fn clicking_apply_saves_and_clicking_a_disabled_revert_does_nothing() {
+        let mut ui = Ui::demo();
+        assert!(ui.is_modified());
+        let (x, y) = centre_of(&mut ui, Id::Apply);
+        assert_eq!(click_at(&mut ui, x, y), Flow::Retheme);
+        assert!(!ui.is_modified());
+
+        // Revert is drawn disabled now, so clicking it must not claim to have done anything.
+        let (rx, ry) = centre_of(&mut ui, Id::Revert);
+        click_at(&mut ui, rx, ry);
+        assert_eq!(ui.status, "nothing to revert");
+        assert!(!ui.is_modified());
+    }
+
+    #[test]
+    fn a_click_on_the_chrome_changes_nothing() {
+        let mut ui = Ui::new();
+        tab_key(&mut ui);
+        assert_eq!(ui.focus.current(), Some(Id::Palette));
+        // The header line: no control there, so focus must survive it.
+        click_at(&mut ui, 4, 1);
+        assert_eq!(ui.focus.current(), Some(Id::Palette));
+        assert_eq!(ui.status, "ready");
+    }
+
+    #[test]
+    fn a_click_lands_on_what_is_there_now_not_on_what_used_to_be() {
+        let mut ui = Ui::new();
+        let (x, y) = centre_of(&mut ui, Id::Palette);
+        // The LAYOUT tab puts Density in exactly the same place Palette was. The click must find
+        // the control that drew this frame, not the one that drew last.
+        ui.tab.set_selected(1);
+        ui.retarget();
+        click_at(&mut ui, x, y);
+        assert!(!ui.palette.is_open(), "a stale hit re-opened a control that is not on screen");
+        assert!(ui.density.is_open());
+        assert_eq!(ui.focus.current(), Some(Id::Density));
     }
 
     #[test]

@@ -25,6 +25,7 @@ use conui_cell::{Padding, Rect};
 
 use crate::canvas::Canvas;
 use crate::layout::{Constraint, Direction, Layout};
+use crate::state::Hits;
 
 /// Something that can draw itself into a region.
 pub trait View {
@@ -105,9 +106,34 @@ pub trait ViewExt: View + Sized {
     fn padded(self, padding: Padding) -> Padded<Self> {
         Padded { view: self, padding }
     }
+
+    /// Note where this view lands, under `id`, so a click can be resolved back to it.
+    ///
+    /// The widget learns nothing: hit-testing is a decorator, which is why `Button` has no
+    /// `on_click` and no id field. See [`Hits`] for what to do with the result.
+    fn hit<T: Copy>(self, hits: &Hits<T>, id: T) -> Hit<'_, T, Self> {
+        Hit { view: self, hits, id }
+    }
 }
 
 impl<V: View> ViewExt for V {}
+
+/// A view that records its region before drawing. See [`ViewExt::hit`].
+pub struct Hit<'a, T, V> {
+    view: V,
+    hits: &'a Hits<T>,
+    id: T,
+}
+
+impl<T: Copy, V: View> View for Hit<'_, T, V> {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        self.hits.record(self.id, canvas.screen_area());
+        self.view.render(canvas);
+    }
+    fn constraint(&self) -> Constraint {
+        self.view.constraint()
+    }
+}
 
 /// A view with its parent-axis size overridden. See [`ViewExt::flex`].
 pub struct Constrained<V> {
@@ -526,5 +552,30 @@ mod tests {
         assert_eq!(boxed.constraint(), Constraint::Length(2));
         let view = Row::new().child(boxed).child(Fill::new('.', Role::Text));
         assert_eq!(rows(&view, 5, 1), ["zz..."]);
+    }
+
+    #[test]
+    fn hit_records_where_layout_actually_put_the_child() {
+        let hits = Hits::new();
+        let view = Column::new().padding(Padding::all(1)).child(
+            Row::new()
+                .gap(2)
+                .child(Fill::new('a', Role::Text).length(3))
+                .child(Fill::new('b', Role::Text).hit(&hits, 'b').length(4)),
+        );
+        assert_eq!(rows(&view, 12, 3), ["            ", " aaa  bbbb  ", "            "]);
+        // One column of padding, three of the first child, two of gap.
+        assert_eq!(hits.area_of('b'), Some(Rect::new(6, 1, 4, 1)));
+        assert_eq!(hits.at(conui_cell::Pos::new(7, 1)), Some('b'));
+        assert_eq!(hits.at(conui_cell::Pos::new(5, 1)), None, "the gap is nobody's");
+    }
+
+    #[test]
+    fn hit_does_not_change_what_the_child_asks_for_or_draws() {
+        let hits = Hits::new();
+        let plain = Fill::new('a', Role::Text).length(2);
+        let decorated = Fill::new('a', Role::Text).length(2).hit(&hits, ());
+        assert_eq!(decorated.constraint(), plain.constraint());
+        assert_eq!(rows(&decorated, 4, 1), rows(&plain, 4, 1));
     }
 }
