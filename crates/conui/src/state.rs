@@ -257,6 +257,207 @@ impl Selection {
     }
 }
 
+// ---- Checklist --------------------------------------------------------------------------
+
+/// Which rows of a list are ticked, and which one the cursor is on.
+///
+/// A [`Selection`] answers "which one", and a great many screens need "which ones" instead: the
+/// directories to scan, the files to stage, the tests to run. That is a selection *and* a tick per
+/// row, and keeping the two in separate variables is how the tick list ends up one longer than the
+/// rows after a refresh.
+///
+/// So this owns both, and owns the length with them. Every method clamps against it, the cursor
+/// moves need no `len` argument the caller could get wrong, and `resize` is the one call that
+/// happens when the data changes underneath.
+///
+/// ```
+/// use conui::state::Checklist;
+///
+/// let mut roots = Checklist::new(3);
+/// roots.toggle();          // the row the cursor is on
+/// roots.down();
+/// roots.toggle();
+/// assert_eq!(roots.checked().collect::<Vec<_>>(), [0, 1]);
+///
+/// roots.only(2);           // just this one
+/// assert_eq!(roots.checked_count(), 1);
+/// roots.check_all();
+/// assert!(roots.all_checked());
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct Checklist {
+    selection: Selection,
+    /// One flag per row, so the length of this *is* the length of the list. Kept in step by
+    /// [`Checklist::resize`] and never indexed without checking.
+    checked: Vec<bool>,
+}
+
+impl Checklist {
+    /// `len` rows, none of them ticked, the cursor on the first.
+    pub fn new(len: usize) -> Self {
+        Self { selection: Selection::new(), checked: vec![false; len] }
+    }
+
+    /// `len` rows, all of them ticked — the right start for "scan everything unless you say
+    /// otherwise", which is what a first run should do.
+    pub fn all(len: usize) -> Self {
+        Self { selection: Selection::new(), checked: vec![true; len] }
+    }
+
+    /// How many rows there are.
+    pub fn len(&self) -> usize {
+        self.checked.len()
+    }
+
+    /// Whether there are no rows at all. Not the same question as whether none are ticked, which is
+    /// [`Checklist::any_checked`].
+    pub fn is_empty(&self) -> bool {
+        self.checked.is_empty()
+    }
+
+    /// The cursor, for the widget that draws the list.
+    pub fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
+    /// The cursor, for the key handling this does not cover — a page jump of your own, a
+    /// `scroll_to` from a dragged scrollbar.
+    pub fn selection_mut(&mut self) -> &mut Selection {
+        &mut self.selection
+    }
+
+    /// The row the cursor is on.
+    pub fn selected(&self) -> usize {
+        self.selection.selected()
+    }
+
+    /// Put the cursor on `index`, clamped to the rows that exist.
+    pub fn select(&mut self, index: usize) {
+        self.selection.set_selected(index);
+        self.selection.clamp(self.len());
+    }
+
+    /// Up one row, stopping at the first.
+    pub fn up(&mut self) {
+        self.selection.up();
+    }
+
+    /// Down one row, stopping at the last. No `len` to pass: this knows it.
+    pub fn down(&mut self) {
+        self.selection.down(self.len());
+    }
+
+    /// The first row. What `HOME` does.
+    pub fn first(&mut self) {
+        self.selection.first();
+    }
+
+    /// The last row. What `END` does.
+    pub fn last(&mut self) {
+        self.selection.last(self.len());
+    }
+
+    /// Up a windowful of the last drawn height.
+    pub fn page_up(&mut self) {
+        self.selection.page_up();
+    }
+
+    /// Down a windowful of the last drawn height.
+    pub fn page_down(&mut self) {
+        self.selection.page_down(self.len());
+    }
+
+    /// Move the cursor by `delta` rows, negative up. What a mouse wheel does.
+    pub fn step(&mut self, delta: i32) {
+        self.selection.step(delta, self.len());
+    }
+
+    /// Whether row `index` is ticked. `false` for a row that does not exist, so a stale index from
+    /// a click or a saved setting cannot panic.
+    pub fn is_checked(&self, index: usize) -> bool {
+        self.checked.get(index).copied().unwrap_or(false)
+    }
+
+    /// Tick or untick the row the cursor is on, reporting its new state. What `SPACE` does.
+    pub fn toggle(&mut self) -> bool {
+        self.toggle_at(self.selected())
+    }
+
+    /// Tick or untick row `index`, reporting its new state — `false` for a row that does not exist.
+    pub fn toggle_at(&mut self, index: usize) -> bool {
+        match self.checked.get_mut(index) {
+            Some(flag) => {
+                *flag = !*flag;
+                *flag
+            }
+            None => false,
+        }
+    }
+
+    /// Set row `index` ticked or not, ignoring a row that does not exist.
+    pub fn set(&mut self, index: usize, checked: bool) {
+        if let Some(flag) = self.checked.get_mut(index) {
+            *flag = checked;
+        }
+    }
+
+    /// Tick everything. What `A` does.
+    pub fn check_all(&mut self) {
+        self.checked.fill(true);
+    }
+
+    /// Untick everything, leaving the cursor where it is. What `N` does.
+    pub fn clear(&mut self) {
+        self.checked.fill(false);
+    }
+
+    /// Tick exactly one row and untick the rest.
+    ///
+    /// The "just this one" of a picker, and the reason it is a method: doing it by hand is a `clear`
+    /// and a `set` that have to stay in that order.
+    pub fn only(&mut self, index: usize) {
+        self.clear();
+        self.set(index, true);
+    }
+
+    /// Tick what was not ticked, and untick what was.
+    pub fn invert(&mut self) {
+        for flag in &mut self.checked {
+            *flag = !*flag;
+        }
+    }
+
+    /// How many rows are ticked.
+    pub fn checked_count(&self) -> usize {
+        self.checked.iter().filter(|checked| **checked).count()
+    }
+
+    /// Whether anything at all is ticked — what an "apply" button should be enabled by.
+    pub fn any_checked(&self) -> bool {
+        self.checked.contains(&true)
+    }
+
+    /// Whether every row is ticked. `true` for no rows: a list with nothing in it has nothing left
+    /// to tick, and an "all" checkbox drawn from this should show as full rather than as partial.
+    pub fn all_checked(&self) -> bool {
+        !self.checked.contains(&false)
+    }
+
+    /// The indices of the ticked rows, in order — what to iterate over once the picking is done.
+    pub fn checked(&self) -> impl Iterator<Item = usize> + '_ {
+        self.checked.iter().enumerate().filter_map(|(index, checked)| checked.then_some(index))
+    }
+
+    /// Grow or shrink to `len` rows, keeping the ticks of the rows that remain.
+    ///
+    /// Rows that appear arrive unticked, because a row nobody has seen yet is not one they asked
+    /// for. The cursor is pulled back inside the list, exactly as [`Selection::clamp`] would.
+    pub fn resize(&mut self, len: usize) {
+        self.checked.resize(len, false);
+        self.selection.clamp(len);
+    }
+}
+
 // ---- Viewport ---------------------------------------------------------------------------
 
 /// How far a scrolled region has been scrolled.
@@ -1447,6 +1648,78 @@ mod tests {
         let selection = Selection::new();
         selection.window(9, 0);
         assert_eq!(selection.height(), 9, "an empty list still has a height to page by");
+    }
+
+    // ---- Checklist ----------------------------------------------------------------------
+
+    #[test]
+    fn a_checklist_ticks_the_row_the_cursor_is_on() {
+        let mut list = Checklist::new(3);
+        assert!(!list.any_checked());
+        assert!(list.toggle(), "the new state of the row, so a caller can log it");
+        list.down();
+        list.down();
+        list.down();
+        assert_eq!(list.selected(), 2, "stops at the last row without being told the length");
+        list.toggle();
+        assert_eq!(list.checked().collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(list.checked_count(), 2);
+        assert!(!list.toggle(), "and back off again");
+        assert_eq!(list.checked().collect::<Vec<_>>(), [0]);
+    }
+
+    #[test]
+    fn select_all_none_and_just_this_one() {
+        let mut list = Checklist::new(4);
+        list.check_all();
+        assert!(list.all_checked() && list.checked_count() == 4);
+        list.clear();
+        assert!(!list.any_checked());
+        list.only(2);
+        assert_eq!(list.checked().collect::<Vec<_>>(), [2], "the rest were cleared first");
+        list.invert();
+        assert_eq!(list.checked().collect::<Vec<_>>(), [0, 1, 3]);
+    }
+
+    #[test]
+    fn everything_ticked_is_the_start_a_first_run_wants() {
+        let list = Checklist::all(800);
+        assert!(list.all_checked());
+        assert_eq!(list.checked_count(), 800);
+        assert_eq!(list.selected(), 0);
+    }
+
+    #[test]
+    fn a_resize_keeps_the_ticks_of_the_rows_that_remain() {
+        let mut list = Checklist::all(5);
+        list.last();
+        assert_eq!(list.selected(), 4);
+        list.resize(2);
+        assert_eq!(list.checked().collect::<Vec<_>>(), [0, 1]);
+        assert_eq!(list.selected(), 1, "the cursor came back inside the list");
+        // Rows that appear are not rows anybody asked for.
+        list.resize(4);
+        assert_eq!(list.checked().collect::<Vec<_>>(), [0, 1]);
+        assert!(!list.all_checked());
+    }
+
+    #[test]
+    fn an_index_from_a_stale_click_or_a_saved_setting_cannot_panic() {
+        let mut list = Checklist::new(2);
+        assert!(!list.is_checked(99));
+        assert!(!list.toggle_at(99));
+        list.set(99, true);
+        list.select(99);
+        assert_eq!(list.selected(), 1);
+        assert!(!list.any_checked());
+
+        let mut empty = Checklist::new(0);
+        assert!(empty.is_empty() && empty.all_checked() && !empty.any_checked());
+        empty.toggle();
+        empty.down();
+        empty.last();
+        empty.step(-3);
+        assert_eq!(empty.selected(), 0);
     }
 
     // ---- Viewport -----------------------------------------------------------------------

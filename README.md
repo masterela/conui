@@ -262,8 +262,8 @@ fn place(canvas: &mut Canvas<'_>, x: u16, y: u16, w: u16, h: u16, view: &dyn Vie
 | | |
 |---|---|
 | Layout | `Constraint::{Length, Percentage, Ratio, Min, Max, Fill}`, `Row`, `Column`, `Spacer`, `Padded`, `Scroll`, `centered` |
-| Widgets | `Text`, `Rule`, `Gauge`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Table`, `Input`, `Button`, `Tabs`, `Select`, `Menu`, `Scrollbar` |
-| State | `Selection` (cursor, its own scroll offset, and the height it was drawn at), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed), `Hits<T>` (where each control landed), `Viewport` (how far a pane with no cursor has been scrolled) |
+| Widgets | `Text`, `Rule`, `Gauge`, `Progress`, `Stat`, `Sparkline`, `Field`, `Panel`, `Hints`, `List`, `Table`, `Input`, `Button`, `Buttons`, `Tabs`, `Select`, `Menu`, `Scrollbar` |
+| State | `Selection` (cursor, its own scroll offset, and the height it was drawn at), `Checklist` (which rows are ticked, and the cursor with them), `Editor` (grapheme-aware single-line editing), `Focus<T>` (a ring of your own ids), `Dropdown` (open/closed + where it landed), `Hits<T>` (where each control landed), `Viewport` (how far a pane with no cursor has been scrolled) |
 | Combinators | `.flex`, `.length`, `.percent`, `.ratio`, `.at_least`, `.at_most`, `.padded`, `.hit`, `.fit` |
 | Escapes | `Paint(closure)`, `When`, and the raw `Canvas` |
 | Themes | `Theme::LAYA` (default), `Theme::EMBER`, `Theme::INHERIT`; nine semantic `Role`s |
@@ -482,9 +482,11 @@ drawing at the immediate layer, next to `screen_area()`, which is where the regi
 
 Resolving *within* a control is the widget's own business, and each one that needs it exposes the
 one measurement only it can make: `Tabs::index_at` (a click in the gap between two labels belongs to
-neither), `Selection::row_at` (which reads the offset the last window recorded, because a row number
-means nothing without knowing how far the list had scrolled), `List::text_column` (left of it is the
-tick, and clicking a task's tick is how you tick it), `Table::hit_at` (one call answers "heading, so
+neither), `Buttons::index_at` (the same, and it takes the region because a centred row of buttons is
+nowhere near where its labels would suggest), `Selection::row_at` (which reads the offset the last
+window recorded, because a row number means nothing without knowing how far the list had scrolled),
+`List::text_column` and `List::check_column` (left of the text is the tick, and clicking a task's
+tick is how you tick it), `Table::hit_at` (one call answers "heading, so
 sort" or "row, so select", because the table is the only thing that knows where its columns came out),
 `Editor::view_from` paired with
 `Editor::set_cursor_column` (a click in a text field is a caret position, and a field narrower than

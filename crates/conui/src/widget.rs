@@ -14,7 +14,7 @@ use conui_cell::{Padding, Pos, Rect, Style};
 
 use crate::canvas::{Canvas, text_width};
 use crate::layout::{Constraint, Direction, resolve};
-use crate::state::{Dropdown, Editor, Selection, Viewport};
+use crate::state::{Checklist, Dropdown, Editor, Selection, Viewport};
 use crate::theme::Role;
 use crate::typography::{self, BarStyle, DIGIT_HEIGHT, line, mark};
 use crate::view::{Stack, View};
@@ -454,6 +454,327 @@ impl View for Gauge {
 
     fn constraint(&self, axis: Direction) -> Constraint {
         one_row(axis)
+    }
+}
+
+// ---- Progress ---------------------------------------------------------------------------
+
+/// What a [`Progress`] bar prints beside itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Tally {
+    /// `37/84 · 44%`. Both, because the percentage alone hides how much work there is and the
+    /// count alone leaves the reader doing the division.
+    #[default]
+    CountAndPercent,
+    /// `37/84`.
+    Count,
+    /// `44%`.
+    Percent,
+    /// Nothing: the bar is the whole story, and the columns go back to it.
+    None,
+    /// Anything the caller would rather say — a rate, a time remaining, a stage name.
+    Text(String),
+}
+
+impl Tally {
+    /// The text for `done` items of `total`, or of an unknown total.
+    ///
+    /// With no total there is no percentage to print, so the forms that would have shown one show
+    /// the count on its own rather than a number nobody can compute.
+    fn render(&self, done: usize, total: Option<usize>) -> Option<String> {
+        match (self, total) {
+            (Self::None, _) => None,
+            (Self::Text(text), _) => Some(text.clone()),
+            (Self::CountAndPercent, Some(total)) => {
+                Some(format!("{done}/{total} {} {}%", mark::SEPARATOR, percent(done, total)))
+            }
+            (Self::Count, Some(total)) => Some(format!("{done}/{total}")),
+            (Self::Percent, Some(total)) => Some(format!("{}%", percent(done, total))),
+            (Self::CountAndPercent | Self::Count, None) => Some(done.to_string()),
+            (Self::Percent, None) => None,
+        }
+    }
+}
+
+/// `done` out of `total` as a whole percentage, truncated and never above a hundred.
+///
+/// Truncated rather than rounded because a bar that says `100%` with work still to do is a bar
+/// nobody believes the next time it says it. A total of nothing is complete by definition.
+fn percent(done: usize, total: usize) -> usize {
+    match total {
+        0 => 100,
+        total => (done.min(total) * 100) / total,
+    }
+}
+
+/// How far through a job of known length you are: `SCAN ████████░░░░░░  37/84 · 44%`.
+///
+/// Distinct from [`Gauge`], which measures a level — a risk, a load, a share. This measures work,
+/// and the difference is not cosmetic. It counts in whole items rather than a fraction, so the bar
+/// and the numbers beside it can never disagree; it fills by truncation, so it reaches the end
+/// exactly when the last item is done and not a moment before; and it accepts not knowing the
+/// total, for the part of a job spent finding out how much of it there is.
+///
+/// Set a [`caption`](Self::caption) to name what is being worked on right now, which is the line
+/// that turns a bar into something worth watching.
+///
+/// ```
+/// use conui::widget::{Progress, Tally};
+///
+/// let scan = Progress::new(37, 84).label("SCAN").caption("chatSessions/3f2c…json");
+/// assert_eq!(scan.fraction(), 37.0 / 84.0);
+/// assert!(!scan.is_complete());
+///
+/// // Before the total is known, a marching bar and a bare count.
+/// let finding = Progress::indeterminate(12).done(312).tally(Tally::Count);
+/// assert!(finding.fraction() == 0.0);
+/// ```
+pub struct Progress {
+    done: usize,
+    /// `None` while the size of the job is still being discovered, which makes the bar march
+    /// instead of fill.
+    total: Option<usize>,
+    /// Advances the marching block of an indeterminate bar. Ignored by a determinate one.
+    tick: u64,
+    label: Option<String>,
+    label_width: Option<u16>,
+    label_role: Role,
+    caption: Option<String>,
+    caption_role: Role,
+    role: Role,
+    track: Role,
+    style: BarStyle,
+    tally: Tally,
+    bar_width: Option<u16>,
+}
+
+impl Progress {
+    /// `done` items of `total` finished. A `done` past the total is clamped rather than overflowing
+    /// the bar, since a miscounted job should not also draw wrongly.
+    pub fn new(done: usize, total: usize) -> Self {
+        Self {
+            done,
+            total: Some(total),
+            tick: 0,
+            label: None,
+            label_width: None,
+            label_role: Role::Muted,
+            caption: None,
+            caption_role: Role::Dim,
+            role: Role::Accent,
+            track: Role::Dim,
+            style: BarStyle::Shaded,
+            tally: Tally::default(),
+            bar_width: None,
+        }
+    }
+
+    /// A bar for a job whose length is not known yet: a block marches back and forth instead of
+    /// filling, and the tally shows however many items have been dealt with so far.
+    ///
+    /// `tick` is what moves it, and it has to come from outside: a widget is a value rebuilt every
+    /// frame and has no memory to animate from. A frame counter does, or
+    /// `app.elapsed().as_millis() / 80` for a speed that does not depend on the frame rate.
+    pub fn indeterminate(tick: u64) -> Self {
+        Self { total: None, tick, ..Self::new(0, 0) }
+    }
+
+    /// How many items are done — the part of [`Progress::new`] that changes every frame, and the
+    /// only number an [`indeterminate`](Self::indeterminate) bar has to show.
+    pub fn done(mut self, done: usize) -> Self {
+        self.done = done;
+        self
+    }
+
+    /// Put a label to the left of the bar, in the columns the bar then does without.
+    pub fn label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
+    /// Reserve a fixed number of columns for the label, so that stacked bars line up even when
+    /// their labels differ in length.
+    pub fn label_width(mut self, width: u16) -> Self {
+        self.label_width = Some(width);
+        self
+    }
+
+    /// Colour the label differently from the default muted grey.
+    pub fn label_role(mut self, role: Role) -> Self {
+        self.label_role = role;
+        self
+    }
+
+    /// A second row under the bar naming what is being worked on now, truncated to fit.
+    ///
+    /// This is what makes a long job legible: the bar says how far, the caption says where. It
+    /// costs a row, which is why it is not the default.
+    pub fn caption(mut self, caption: impl Into<String>) -> Self {
+        self.caption = Some(caption.into());
+        self
+    }
+
+    /// Colour of the caption row. Dim by default, so the eye goes to the bar first.
+    pub fn caption_role(mut self, role: Role) -> Self {
+        self.caption_role = role;
+        self
+    }
+
+    /// Colour of the filled run, and of the tally beside it.
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// Colour of the unfilled run.
+    pub fn track(mut self, role: Role) -> Self {
+        self.track = role;
+        self
+    }
+
+    /// Which glyphs the bar is drawn from. Solid blocks over a light shade by default: progress
+    /// wants its full extent visible, so that how much is left reads at a glance.
+    pub fn style(mut self, style: BarStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// What to print to the right of the bar, if anything.
+    pub fn tally(mut self, tally: Tally) -> Self {
+        self.tally = tally;
+        self
+    }
+
+    /// Cap the bar at this many columns instead of letting it fill the region.
+    pub fn bar_width(mut self, width: u16) -> Self {
+        self.bar_width = Some(width);
+        self
+    }
+
+    /// How far along, in `0.0..=1.0`. Zero for a job of unknown length, which has no fraction to
+    /// report — ask [`Progress::is_indeterminate`] before believing it.
+    pub fn fraction(&self) -> f32 {
+        match self.total {
+            Some(0) => 1.0,
+            Some(total) => self.done.min(total) as f32 / total as f32,
+            None => 0.0,
+        }
+    }
+
+    /// Whether every item is done. False for a job whose length is not known yet: finishing is not
+    /// something you can claim before you know what there was to do.
+    pub fn is_complete(&self) -> bool {
+        self.total.is_some_and(|total| self.done >= total)
+    }
+
+    /// Whether the length of the job is still unknown.
+    pub fn is_indeterminate(&self) -> bool {
+        self.total.is_none()
+    }
+
+    /// Columns the marching block of an indeterminate bar occupies: a fifth of the bar, and never
+    /// so short that it reads as a cursor rather than as activity.
+    fn block(length: u16) -> u16 {
+        (length / 5).max(3).min(length)
+    }
+
+    /// Where that block starts, for a bar `length` wide at this tick.
+    ///
+    /// It bounces rather than wrapping. A block that reappears at the left the instant it leaves
+    /// the right reads as two blocks at the seam; one that turns round reads as one thing moving.
+    fn sweep(&self, length: u16) -> u16 {
+        let travel = length.saturating_sub(Self::block(length));
+        if travel == 0 {
+            return 0;
+        }
+        let period = u64::from(travel) * 2;
+        let position = self.tick % period;
+        u16::try_from(position.min(period - position)).unwrap_or(0)
+    }
+
+    /// Draw the bar itself into `length` columns at `x`, track first.
+    ///
+    /// The fill is integer arithmetic over the counts rather than the rounded fraction the canvas
+    /// would use, which is the whole reason this does not call `Canvas::bar_with`: rounding fills
+    /// the last column early, and a bar that looks finished while the job is not is the one bug a
+    /// progress bar must not have.
+    fn bar(&self, canvas: &mut Canvas<'_>, x: i32, length: u16) {
+        if length == 0 {
+            return;
+        }
+        if let Some(character) = self.style.track() {
+            canvas.run(x, 0, character, length, self.track);
+        }
+        let Some(total) = self.total else {
+            let start = self.sweep(length);
+            canvas.run(x + i32::from(start), 0, self.style.fill(), Self::block(length), self.role);
+            return;
+        };
+        if total == 0 || self.done >= total {
+            canvas.run(x, 0, self.style.fill(), length, self.role);
+            return;
+        }
+        if self.style.is_smooth() {
+            // Eighth-cell resolution, so a job of two hundred items still moves on every one of
+            // them in a bar sixty columns wide.
+            let eighths = self.done * usize::from(length) * 8 / total;
+            let whole = u16::try_from(eighths / 8).unwrap_or(length).min(length);
+            canvas.run(x, 0, self.style.fill(), whole, self.role);
+            if eighths % 8 > 0 && whole < length {
+                let partial = typography::HORIZONTAL_LEVELS[eighths % 8];
+                canvas.set(x + i32::from(whole), 0, partial, self.role);
+            }
+            return;
+        }
+        let filled = u16::try_from(self.done * usize::from(length) / total).unwrap_or(length);
+        canvas.run(x, 0, self.style.fill(), filled.min(length), self.role);
+    }
+}
+
+impl View for Progress {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let width = canvas.width();
+        if width == 0 || canvas.height() == 0 {
+            return;
+        }
+        let gap = 1i32;
+        let mut x = 0i32;
+
+        if let Some(label) = &self.label {
+            let reserved = self.label_width.unwrap_or_else(|| text_width(label));
+            canvas.put_truncated(x, 0, label, reserved, self.label_role);
+            x += i32::from(reserved) + gap;
+        }
+
+        let tally = self.tally.render(self.done, self.total);
+        let tally_width = tally.as_deref().map_or(0, text_width);
+        let tail = if tally_width > 0 { i32::from(tally_width) + gap } else { 0 };
+
+        let available = i32::from(width) - x - tail;
+        if available > 0 {
+            let length = u16::try_from(available).unwrap_or(0);
+            self.bar(canvas, x, self.bar_width.map_or(length, |cap| length.min(cap)));
+        }
+        if let Some(tally) = tally {
+            // Right-aligned, so the numbers stay put as the bar grows past them.
+            canvas.put_right(i32::from(width), 0, &tally, self.role);
+        }
+
+        // Under the label as well as the bar: the caption is prose, and prose indented to the
+        // bar's column looks like it belongs to whichever item the bar happens to have reached.
+        if let Some(caption) = &self.caption {
+            if canvas.height() > 1 {
+                canvas.put_truncated(0, 1, caption, width, self.caption_role);
+            }
+        }
+    }
+
+    /// Two rows with a caption, one without, and whatever width it is given.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match axis {
+            Direction::Vertical => Constraint::Length(if self.caption.is_some() { 2 } else { 1 }),
+            Direction::Horizontal => Constraint::Fill(1),
+        }
     }
 }
 
@@ -949,9 +1270,11 @@ impl From<String> for ListRow {
 pub struct List<'a> {
     rows: Vec<ListRow>,
     selection: Option<&'a Selection>,
+    checklist: Option<&'a Checklist>,
     marker: String,
     role: Role,
     selected_role: Role,
+    check_role: Role,
     highlight: bool,
     empty: Option<String>,
 }
@@ -963,9 +1286,11 @@ impl<'a> List<'a> {
         Self {
             rows: rows.into_iter().map(Into::into).collect(),
             selection: None,
+            checklist: None,
             marker: format!("{} ", mark::SELECTED),
             role: Role::Text,
             selected_role: Role::Accent,
+            check_role: Role::Accent,
             highlight: false,
             empty: None,
         }
@@ -976,6 +1301,17 @@ impl<'a> List<'a> {
     /// Without one the list is a static column of text, which is the right thing for a log pane.
     pub fn selection(mut self, selection: &'a Selection) -> Self {
         self.selection = Some(selection);
+        self
+    }
+
+    /// Draw a tick box in front of every row, from a [`Checklist`] that also supplies the cursor.
+    ///
+    /// This is the whole of a multi-select list: the boxes come from the same state as the cursor,
+    /// so they cannot disagree about how many rows there are, and there is no second
+    /// [`selection`](Self::selection) call to remember. Takes precedence over one if both are given.
+    pub fn checklist(mut self, checklist: &'a Checklist) -> Self {
+        self.checklist = Some(checklist);
+        self.selection = Some(checklist.selection());
         self
     }
 
@@ -1028,6 +1364,35 @@ impl<'a> List<'a> {
         self.rows.is_empty()
     }
 
+    /// Colour of a ticked box. The empty ones are always dim: a column of boxes should read as the
+    /// ticked ones and nothing else.
+    pub fn check_role(mut self, role: Role) -> Self {
+        self.check_role = role;
+        self
+    }
+
+    /// Columns a tick box and its trailing space take, or none if this is not a checklist.
+    fn check_width(&self) -> u16 {
+        match self.checklist {
+            Some(_) => 4,
+            None => 0,
+        }
+    }
+
+    /// The column the tick boxes start at, for resolving a click on one.
+    ///
+    /// `None` for a list without a [`checklist`](Self::checklist). Pair it with
+    /// [`Selection::row_at`](crate::state::Selection::row_at): the row says which item, and whether
+    /// the click was in this column says whether it meant "tick it" or "select it".
+    pub fn check_column(&self) -> Option<Range<u16>> {
+        self.checklist.map(|_| {
+            let start = if self.selection.is_some() { text_width(&self.marker) } else { 0 };
+            // The trailing space belongs to the text, not to the box: clicking the gap between a
+            // box and its label is a click on the label.
+            start..start + 3
+        })
+    }
+
     /// Width of the mark column: the widest mark in the list, so the column does not jitter as
     /// rows scroll through it.
     fn mark_width(&self) -> u16 {
@@ -1047,7 +1412,7 @@ impl<'a> List<'a> {
     pub fn text_column(&self) -> u16 {
         let marker = if self.selection.is_some() { text_width(&self.marker) } else { 0 };
         let mark = self.mark_width();
-        marker + mark + u16::from(mark > 0)
+        marker + self.check_width() + mark + u16::from(mark > 0)
     }
 }
 
@@ -1081,8 +1446,22 @@ impl View for List<'_> {
             if is_selected && marker_width > 0 {
                 canvas.put(0, y, &self.marker, self.selected_role);
             }
+            if let Some(checklist) = self.checklist {
+                let ticked = checklist.is_checked(index);
+                let box_role = if ticked { self.check_role } else { Role::Dim };
+                let glyph = if ticked { mark::CHECK } else { ' ' };
+                canvas.put(i32::from(marker_width), y, "[", Role::Dim);
+                canvas.set(i32::from(marker_width) + 1, y, glyph, box_role);
+                canvas.put(i32::from(marker_width) + 2, y, "]", Role::Dim);
+            }
             if let Some((text, role)) = &row.mark {
-                canvas.put_truncated(i32::from(marker_width), y, text, mark_width, *role);
+                canvas.put_truncated(
+                    i32::from(marker_width + self.check_width()),
+                    y,
+                    text,
+                    mark_width,
+                    *role,
+                );
             }
             let role = if is_selected { self.selected_role } else { row.role.unwrap_or(self.role) };
             canvas.put_truncated(i32::from(text_x), y, &row.text, width - text_x.min(width), role);
@@ -1898,6 +2277,214 @@ impl View for Button {
     }
 }
 
+// ---- Buttons ----------------------------------------------------------------------------
+
+/// A row of [`Button`]s with one of them focused: `‹ Repair ›  ‹ Cancel ›`.
+///
+/// Which one is focused is a [`Selection`] you own, so moving along the row is
+/// `selection.cycle_down(len)` for `→` and `cycle_up` for `←` — the same calls a list uses, because
+/// it is the same question. Wrapping is usually right here: a choice of two or three is a short
+/// menu, and running off the end of one and stopping feels broken.
+///
+/// The point of the widget is that a question can be answered two ways at once. The arrow keys and
+/// `Enter` walk the row for somebody who is reading it, and [`Buttons::index_for`] turns a typed
+/// letter straight into an answer for somebody who already knows what they want — the same
+/// `y`/`n` that worked before the row existed. Both end in the same `usize`, so the code that acts
+/// on the answer is written once.
+///
+/// ```
+/// use conui::state::Selection;
+/// use conui::widget::Buttons;
+///
+/// let choice = Selection::new();
+/// let buttons = Buttons::new(["Yes", "No"]).selection(&choice);
+/// assert_eq!(buttons.index_for('n'), Some(1)); // typed straight in
+/// assert_eq!(choice.selected(), 0);            // or walked to with the arrows
+/// assert_eq!(buttons.width(), 7 + 2 + 6);      // "‹ Yes ›", a gap, "‹ No ›"
+/// ```
+pub struct Buttons<'a> {
+    labels: Vec<String>,
+    selection: Option<&'a Selection>,
+    focused: bool,
+    gap: u16,
+    role: Role,
+    roles: Vec<Role>,
+    align: Align,
+}
+
+impl<'a> Buttons<'a> {
+    /// A row of buttons reading `labels`, none of them focused until a
+    /// [`selection`](Self::selection) says which.
+    pub fn new<S: Into<String>>(labels: impl IntoIterator<Item = S>) -> Self {
+        Self {
+            labels: labels.into_iter().map(Into::into).collect(),
+            selection: None,
+            focused: true,
+            gap: 2,
+            role: Role::Text,
+            roles: Vec::new(),
+            align: Align::Left,
+        }
+    }
+
+    /// Which button the keyboard is on, as an index into the labels.
+    pub fn selection(mut self, selection: &'a Selection) -> Self {
+        self.selection = Some(selection);
+        self
+    }
+
+    /// Whether the row is what the arrow keys are talking to. True by default, unlike every other
+    /// focusable widget here: a row of buttons is put on screen to be answered, and the case where
+    /// it is one control among several is the rarer one. Say `.focused(false)` for that case, and
+    /// the row keeps showing which button is current without claiming the keystrokes.
+    pub fn focused(mut self, focused: bool) -> Self {
+        self.focused = focused;
+        self
+    }
+
+    /// Columns between one button and the next. Two by default; the gap belongs to neither
+    /// neighbour, which is what lets [`index_at`](Self::index_at) return `None` for a click in it.
+    pub fn gap(mut self, gap: u16) -> Self {
+        self.gap = gap;
+        self
+    }
+
+    /// Colour of every button that has not been given one of its own.
+    pub fn role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// A colour per button, index-matched to the labels: danger for the one that deletes something,
+    /// accent for the one the dialog is built around. Buttons past the end of this list fall back to
+    /// the shared [`role`](Self::role).
+    pub fn roles(mut self, roles: impl IntoIterator<Item = Role>) -> Self {
+        self.roles = roles.into_iter().collect();
+        self
+    }
+
+    /// Centre the row in whatever width it is given, which is what a dialog wants.
+    pub fn centered(mut self) -> Self {
+        self.align = Align::Center;
+        self
+    }
+
+    /// Push the row against the right edge, where a form's buttons usually sit.
+    pub fn right(mut self) -> Self {
+        self.align = Align::Right;
+        self
+    }
+
+    /// How many buttons there are — the argument
+    /// [`Selection::cycle_down`](crate::state::Selection::cycle_down) wants.
+    pub fn len(&self) -> usize {
+        self.labels.len()
+    }
+
+    /// Whether there are no buttons, in which case the row draws nothing.
+    pub fn is_empty(&self) -> bool {
+        self.labels.is_empty()
+    }
+
+    /// Columns every button and gap needs, for sizing or centring the row.
+    pub fn width(&self) -> u16 {
+        let buttons: u16 =
+            self.labels.iter().map(|label| Button::width(label)).fold(0, u16::saturating_add);
+        let gaps = self.gap.saturating_mul(self.labels.len().saturating_sub(1) as u16);
+        buttons.saturating_add(gaps)
+    }
+
+    /// Which button a letter answers: the first whose label starts with it, ignoring case.
+    ///
+    /// `Yes`/`No` gives you `y` and `n` without stating them anywhere, and `Enter` on the focused
+    /// button gives the same index. Labels that share an initial are a UI problem rather than a
+    /// programming one — the earlier button wins, and the later one is only reachable with the
+    /// arrows.
+    pub fn index_for(&self, key: char) -> Option<usize> {
+        let key = key.to_lowercase().next()?;
+        self.labels.iter().position(|label| {
+            label.chars().next().is_some_and(|initial| {
+                initial.to_lowercase().next().is_some_and(|initial| initial == key)
+            })
+        })
+    }
+
+    /// Which button was clicked, given the region the row drew into.
+    ///
+    /// Takes the region rather than a bare column because the row may be centred in it, and a
+    /// centred row's buttons are nowhere near the coordinates its labels would suggest. `None` for a
+    /// click in a gap, outside the row, or on a row that has no buttons: a click between two buttons
+    /// should do nothing rather than guess which one was meant.
+    pub fn index_at(&self, area: Rect, pos: Pos) -> Option<usize> {
+        if !area.contains(pos) {
+            return None;
+        }
+        let x = pos.x - area.x;
+        self.spans(area.width)
+            .into_iter()
+            .find(|&(_, start, width)| x >= start && x < start.saturating_add(width))
+            .map(|(index, _, _)| index)
+    }
+
+    /// Where each button sits within a region `region` wide: its index, its first column and its
+    /// width.
+    ///
+    /// One helper for both drawing and hit testing, so a click can never land somewhere other than
+    /// what it looks like it landed on. Buttons that do not fit are left out entirely rather than
+    /// half-drawn, since half a bracket reads as a broken program.
+    fn spans(&self, region: u16) -> Vec<(usize, u16, u16)> {
+        let total = self.width();
+        let slack = region.saturating_sub(total);
+        let mut x = match self.align {
+            Align::Left => 0,
+            Align::Center => slack / 2,
+            Align::Right => slack,
+        };
+        let mut spans = Vec::with_capacity(self.labels.len());
+        for (index, label) in self.labels.iter().enumerate() {
+            let width = Button::width(label);
+            if x.saturating_add(width) > region {
+                break;
+            }
+            spans.push((index, x, width));
+            x = x.saturating_add(width).saturating_add(self.gap);
+        }
+        spans
+    }
+}
+
+impl View for Buttons<'_> {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let width = canvas.width();
+        if width == 0 || canvas.height() == 0 {
+            return;
+        }
+        let selected = self.selection.map(Selection::selected);
+        for (index, x, span) in self.spans(width) {
+            let current = selected == Some(index);
+            // An unfocused row quietens everything except the button `Enter` would hit if focus came
+            // back, which keeps the answer-in-progress visible without claiming the keystrokes.
+            let role = match (self.focused, current) {
+                (true, _) | (false, true) => self.roles.get(index).copied().unwrap_or(self.role),
+                (false, false) => Role::Dim,
+            };
+            let button = Button::new(self.labels[index].as_str())
+                .role(role)
+                .focused(self.focused && current);
+            let mut cell = canvas.sub(Rect::new(x, 0, span, 1));
+            button.render(&mut cell);
+        }
+    }
+
+    /// One row, and the width of every button and gap.
+    fn constraint(&self, axis: Direction) -> Constraint {
+        match axis {
+            Direction::Vertical => Constraint::Length(1),
+            Direction::Horizontal => Constraint::Length(self.width()),
+        }
+    }
+}
+
 // ---- Tabs -------------------------------------------------------------------------------
 
 /// A row of labels with the current one underlined.
@@ -2381,6 +2968,88 @@ mod tests {
         }
     }
 
+    // ---- Progress -----------------------------------------------------------------------
+
+    #[test]
+    fn a_progress_bar_prints_the_count_and_the_percentage() {
+        let progress = Progress::new(1, 4).label("SCAN");
+        assert_eq!(row(&progress, 22), "SCAN █░░░░░░ 1/4 · 25%");
+        assert_eq!(progress.constraint(Direction::Vertical), Constraint::Length(1));
+    }
+
+    #[test]
+    fn a_bar_fills_by_truncation_so_it_is_only_full_when_the_job_is() {
+        // Nine of ten items into a ten-column bar is nine columns, and the tenth arrives with the
+        // tenth item. A rounded fill would have shown ten for both, which is the one lie a
+        // progress bar must not tell.
+        let nearly = Progress::new(9, 10).tally(Tally::None).style(BarStyle::Blocks);
+        assert_eq!(row(&nearly, 10), "█████████ ");
+        let done = Progress::new(10, 10).tally(Tally::None).style(BarStyle::Blocks);
+        assert_eq!(row(&done, 10), "██████████");
+        assert!(done.is_complete() && !nearly.is_complete());
+    }
+
+    #[test]
+    fn a_percentage_never_reads_as_finished_before_the_last_item() {
+        assert_eq!(percent(99, 100), 99);
+        assert_eq!(percent(999, 1000), 99, "truncated, not rounded to 100");
+        assert_eq!(percent(1000, 1000), 100);
+        assert_eq!(percent(7, 0), 100, "no work is work done");
+        assert_eq!(percent(11, 10), 100, "a miscount cannot exceed the whole");
+    }
+
+    #[test]
+    fn a_job_of_nothing_is_a_full_bar_rather_than_a_division_by_zero() {
+        let empty = Progress::new(0, 0).style(BarStyle::Blocks);
+        assert_eq!(row(&empty, 17), "██████ 0/0 · 100%");
+        assert_eq!(empty.fraction(), 1.0);
+        assert!(empty.is_complete());
+    }
+
+    #[test]
+    fn a_smooth_bar_moves_on_items_too_small_to_fill_a_column() {
+        // A fifth of a column: the eighth-cell glyph is the only thing that can show it.
+        let progress = Progress::new(1, 40).tally(Tally::None).style(BarStyle::Smooth);
+        assert_eq!(row(&progress, 8), "▏       ");
+    }
+
+    #[test]
+    fn an_indeterminate_bar_marches_and_counts_without_a_percentage() {
+        let scanning = |tick| row(&Progress::indeterminate(tick).done(312), 20);
+        assert!(scanning(0).ends_with(" 312"), "no percentage without a total: {:?}", scanning(0));
+        // The block moves, and comes back: bouncing, so it never reads as two blocks at a seam.
+        let positions: Vec<_> = (0..27).map(|tick| scanning(tick).find('█')).collect();
+        assert!(positions.windows(2).all(|pair| pair[0] != pair[1]), "{positions:?}");
+        assert_eq!(positions[0], positions[26], "a period of 26 for a bar of 16 columns");
+        assert!(Progress::indeterminate(0).is_indeterminate());
+        assert!(!Progress::indeterminate(0).done(9).is_complete());
+    }
+
+    #[test]
+    fn a_caption_takes_a_second_row_under_the_whole_bar() {
+        let progress = Progress::new(2, 4).label("FIX").caption("chatSessions/3f2c.json");
+        assert_eq!(progress.constraint(Direction::Vertical), Constraint::Length(2));
+        assert_eq!(rows(&progress, 22, 2), ["FIX ████░░░░ 2/4 · 50%", "chatSessions/3f2c.json"]);
+    }
+
+    #[test]
+    fn a_tally_can_be_the_count_alone_or_a_string_of_your_own() {
+        assert_eq!(Tally::Count.render(3, Some(9)).unwrap(), "3/9");
+        assert_eq!(Tally::Percent.render(3, Some(9)).unwrap(), "33%");
+        assert_eq!(Tally::Percent.render(3, None), None, "nothing to be a percentage of");
+        assert_eq!(Tally::Count.render(3, None).unwrap(), "3");
+        assert_eq!(Tally::Text("2m left".into()).render(3, Some(9)).unwrap(), "2m left");
+        assert_eq!(Tally::None.render(3, Some(9)), None);
+    }
+
+    #[test]
+    fn a_progress_bar_in_a_region_too_small_for_its_parts_does_not_panic() {
+        for width in 0..14u16 {
+            let _ = row(&Progress::new(3, 7).label("SCANNING"), width);
+            let _ = row(&Progress::indeterminate(5).label("SCANNING"), width);
+        }
+    }
+
     // ---- Stat ---------------------------------------------------------------------------
 
     #[test]
@@ -2620,6 +3289,51 @@ mod tests {
             Some(Theme::LAYA.surface),
             "but not elsewhere"
         );
+    }
+
+    #[test]
+    fn a_checklist_draws_a_box_per_row_and_the_cursor_from_the_same_state() {
+        let mut picker = Checklist::new(3);
+        picker.toggle();
+        picker.down();
+        let list = List::new(["Code", "Insiders", "Cursor"]).checklist(&picker);
+        assert_eq!(
+            rows(&list, 15, 3),
+            ["  [\u{2713}] Code     ", "› [ ] Insiders ", "  [ ] Cursor   "]
+        );
+        assert_eq!(list.text_column(), 6, "the cursor, the box, and a space");
+    }
+
+    #[test]
+    fn a_ticked_box_is_the_only_thing_in_a_column_of_boxes_with_colour() {
+        let mut picker = Checklist::new(2);
+        picker.toggle();
+        let list = List::new(["on", "off"]).checklist(&picker).check_role(Role::Warn);
+        let mut buffer = Buffer::new(10, 2);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        list.render(&mut canvas);
+        assert_eq!(buffer.get(3, 0).unwrap().style.fg, Some(Theme::LAYA.warn), "the tick");
+        assert_eq!(buffer.get(2, 0).unwrap().style.fg, Some(Theme::LAYA.dim), "not its bracket");
+        assert_eq!(buffer.get(3, 1).unwrap().style.fg, Some(Theme::LAYA.dim), "nor an empty box");
+    }
+
+    #[test]
+    fn a_click_on_a_box_is_distinguishable_from_a_click_on_its_row() {
+        let picker = Checklist::new(2);
+        let list = List::new(["one", "two"]).checklist(&picker);
+        let boxes = list.check_column().expect("a checklist has one");
+        assert_eq!(boxes, 2..5);
+        assert!(boxes.contains(&3), "the tick itself");
+        assert!(!boxes.contains(&5), "the space before the text belongs to the text");
+        assert_eq!(List::new(["one"]).check_column(), None, "no boxes, no column");
+    }
+
+    #[test]
+    fn a_checklist_row_can_still_carry_a_mark_of_its_own() {
+        let picker = Checklist::all(1);
+        let list = List::new([ListRow::new("broken").mark("WARN", Role::Warn)]).checklist(&picker);
+        assert_eq!(row(&list, 20), "› [\u{2713}] WARN broken   ");
+        assert_eq!(list.text_column(), 11);
     }
 
     #[test]
@@ -3064,6 +3778,86 @@ mod tests {
     #[test]
     fn a_button_measures_its_label_in_columns_not_bytes() {
         assert_eq!(Button::width("\u{754c}\u{754c}"), 8);
+    }
+
+    // ---- Buttons ------------------------------------------------------------------------
+
+    #[test]
+    fn a_row_of_buttons_lifts_the_one_the_selection_is_on() {
+        let choice = Selection::at(1);
+        let buttons = Buttons::new(["Yes", "No"]).selection(&choice);
+        assert_eq!(row(&buttons, 15), "\u{2039} Yes \u{203a}  \u{2039} No \u{203a}");
+        assert_eq!(buttons.constraint(Direction::Horizontal), Constraint::Length(15));
+        assert_eq!(buttons.constraint(Direction::Vertical), Constraint::Length(1));
+
+        let mut buffer = Buffer::new(15, 1);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        buttons.render(&mut canvas);
+        let lift = Some(Theme::LAYA.surface);
+        assert_ne!(buffer.get(0, 0).expect("cell").style.bg, lift, "‹ Yes › is not focused");
+        assert_eq!(buffer.get(9, 0).expect("cell").style.bg, Some(Theme::LAYA.surface));
+    }
+
+    #[test]
+    fn a_letter_answers_the_same_question_the_arrows_do() {
+        let buttons = Buttons::new(["Yes", "No", "Cancel"]);
+        assert_eq!(buttons.index_for('y'), Some(0));
+        assert_eq!(buttons.index_for('N'), Some(1), "case is not the user's problem");
+        assert_eq!(buttons.index_for('c'), Some(2));
+        assert_eq!(buttons.index_for('q'), None);
+        // And the arrows reach the same indices, wrapping round a short row.
+        let mut choice = Selection::new();
+        choice.cycle_up(buttons.len());
+        assert_eq!(choice.selected(), 2);
+        choice.cycle_down(buttons.len());
+        assert_eq!(choice.selected(), 0);
+    }
+
+    #[test]
+    fn a_centred_row_is_hit_tested_where_it_was_actually_drawn() {
+        let buttons = Buttons::new(["Yes", "No"]).centered();
+        let area = Rect::new(0, 4, 21, 1);
+        assert_eq!(row(&buttons, 21), "   \u{2039} Yes \u{203a}  \u{2039} No \u{203a}   ");
+        assert_eq!(buttons.index_at(area, Pos::new(3, 4)), Some(0), "the left bracket of ‹ Yes ›");
+        assert_eq!(buttons.index_at(area, Pos::new(9, 4)), Some(0), "its right bracket");
+        assert_eq!(buttons.index_at(area, Pos::new(10, 4)), None, "the gap belongs to neither");
+        assert_eq!(buttons.index_at(area, Pos::new(12, 4)), Some(1));
+        assert_eq!(buttons.index_at(area, Pos::new(18, 4)), None, "past the row");
+        assert_eq!(buttons.index_at(area, Pos::new(12, 5)), None, "another row entirely");
+    }
+
+    #[test]
+    fn an_unfocused_row_still_says_which_button_enter_would_hit() {
+        let choice = Selection::at(1);
+        let buttons = Buttons::new(["Yes", "No"]).selection(&choice).focused(false);
+        let mut buffer = Buffer::new(15, 1);
+        let mut canvas = Canvas::full(&mut buffer, Theme::LAYA);
+        buttons.render(&mut canvas);
+        let lift = Some(Theme::LAYA.surface);
+        assert_ne!(buffer.get(9, 0).expect("cell").style.bg, lift, "no lift while unfocused");
+        assert_eq!(
+            buffer.get(11, 0).expect("cell").style.fg,
+            Some(Theme::LAYA.text),
+            "but current"
+        );
+        assert_eq!(buffer.get(2, 0).expect("cell").style.fg, Some(Theme::LAYA.dim), "and this dim");
+    }
+
+    #[test]
+    fn a_button_that_does_not_fit_is_left_out_rather_than_half_drawn() {
+        let buttons = Buttons::new(["Yes", "No"]);
+        let drawn = row(&buttons, 12);
+        assert_eq!(drawn, "\u{2039} Yes \u{203a}     ", "‹ No › needs six columns and has five");
+        assert_eq!(buttons.index_at(Rect::new(0, 0, 12, 1), Pos::new(10, 0)), None);
+    }
+
+    #[test]
+    fn a_row_of_buttons_in_a_region_too_small_for_any_of_them_does_not_panic() {
+        for width in 0..8u16 {
+            let _ = row(&Buttons::new(["Repair", "Cancel"]).centered(), width);
+        }
+        assert_eq!(Buttons::new(Vec::<String>::new()).width(), 0);
+        assert!(Buttons::new(Vec::<String>::new()).is_empty());
     }
 
     // ---- Tabs ---------------------------------------------------------------------------
