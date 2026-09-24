@@ -36,7 +36,7 @@ use std::io::{self, Stdout, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use conui_cell::{Buffer, Cell, Pos};
+use conui_cell::{Buffer, Cell, Color, Pos};
 
 /// Terminal settings captured on entry, restored on exit.
 pub use platform::SavedMode;
@@ -150,6 +150,9 @@ impl Terminal {
     pub fn set_blank_cell(&mut self, cell: Cell) {
         self.blank = cell;
         self.front.reset_to(cell);
+        // And the same colour to the painter, so that a clear really does leave this cell behind
+        // rather than the terminal's own background under a front buffer that claims otherwise.
+        self.painter.set_ground(cell.style.bg.unwrap_or(Color::Reset));
     }
 
     /// The painter underneath, for emitting a sequence this type does not wrap.

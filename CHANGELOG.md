@@ -72,6 +72,16 @@ unticked, and the cursor comes back inside the list. `toggle`, `check_all`, `cle
 the cursor from the same state, so the two cannot disagree about how many rows there are, and
 `List::check_column` says which clicks landed on a box rather than on its label.
 
+### A clear paints the theme's ground
+
+`ED` erases with whatever background is current, and the clears on taking the screen over and after a
+resize were emitted straight after a style reset — so the screen was blanked to the *terminal's*
+default colour while the front buffer claimed it now held the theme's blank cell. The differ then
+skipped every cell that stayed blank, and on a theme unlike the terminal's the gaps between the
+writing kept the terminal's colour for the whole run. `Painter::set_ground` names the colour an erase
+should leave behind, and `Terminal::set_blank_cell` passes it the background it was given, so the two
+can no longer disagree. A theme of `Theme::INHERIT` still emits nothing.
+
 ### Four examples, each of which tests itself
 
 `snake`, `todo`, `settings` and `monitor` — the last a process monitor that reads a real machine on

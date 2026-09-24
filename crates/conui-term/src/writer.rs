@@ -36,6 +36,8 @@ pub struct Painter<W: Write> {
     style: Option<ResolvedStyle>,
     /// Where we believe the cursor is. `None` forces an absolute move.
     cursor: Option<Pos>,
+    /// The background an erase should leave behind. See [`Painter::set_ground`].
+    ground: Color,
     /// Whether we are between `begin_frame` and `end_frame`.
     in_frame: bool,
     /// Whether the alternate screen and input protocols are currently active.
@@ -51,6 +53,7 @@ impl<W: Write> Painter<W> {
             staged: Vec::with_capacity(8 * 1024),
             style: None,
             cursor: None,
+            ground: Color::Reset,
             in_frame: false,
             screen_entered: false,
         }
@@ -89,6 +92,18 @@ impl<W: Write> Painter<W> {
         }
     }
 
+    /// The colour an erase leaves behind, which should be the theme's background.
+    ///
+    /// `ED` paints with whatever background is current, so a clear emitted after a plain reset
+    /// fills the screen with the *terminal's* default colour. The caller meanwhile takes the
+    /// clear as licence to believe the screen now holds its own blank cell, and the differ then
+    /// skips every cell that stays blank — so on a theme whose background is nothing like the
+    /// terminal's, the gaps between the writing keep the terminal's colour for the whole run.
+    /// Telling the painter the ground closes that gap: the erase paints what the caller claims.
+    pub fn set_ground(&mut self, ground: Color) {
+        self.ground = ground;
+    }
+
     /// Forget everything we believe about the terminal.
     ///
     /// Call after anything that can change terminal state behind our back: a resize, a
@@ -115,12 +130,7 @@ impl<W: Write> Painter<W> {
         if self.caps.focus_events {
             self.push(ansi::ENABLE_FOCUS_EVENTS);
         }
-        self.push(ansi::RESET_STYLE);
-        self.push(ansi::CLEAR_SCREEN);
-        self.push(ansi::CURSOR_HOME);
-        // The clear leaves a known state: default style, cursor at the origin.
-        self.style = Some(ResolvedStyle::default());
-        self.cursor = Some(Pos::new(0, 0));
+        self.clear_screen();
         self.screen_entered = true;
         self.flush()
     }
@@ -193,15 +203,18 @@ impl<W: Write> Painter<W> {
         self.flush()
     }
 
-    /// Blank the whole screen and park the cursor at the origin.
+    /// Blank the whole screen to the ground colour and park the cursor at the origin.
     ///
-    /// Only needed when the previous contents cannot be trusted — after a resize, where every
-    /// coordinate has moved and stale cells would otherwise survive outside the new bounds.
+    /// Needed when the previous contents cannot be trusted — on taking the screen over, and after
+    /// a resize, where every coordinate has moved and stale cells would otherwise survive outside
+    /// the new bounds. The erase is to [`Painter::set_ground`], not to the terminal's default, so
+    /// that a caller may treat the cleared screen as holding its own blank cell.
     pub fn clear_screen(&mut self) {
         self.push(ansi::RESET_STYLE);
+        self.style = Some(ResolvedStyle::default());
+        self.apply_style(ResolvedStyle { bg: self.ground, ..ResolvedStyle::default() });
         self.push(ansi::CLEAR_SCREEN);
         self.push(ansi::CURSOR_HOME);
-        self.style = Some(ResolvedStyle::default());
         self.cursor = Some(Pos::new(0, 0));
     }
 
@@ -705,6 +718,31 @@ mod tests {
         assert!(output.contains(ansi::ENTER_ALT_SCREEN));
         assert!(output.contains(ansi::DISABLE_AUTOWRAP));
         assert!(output.contains(ansi::HIDE_CURSOR));
+    }
+
+    /// The bug this guards against is invisible on a dark theme in a dark terminal and glaring on
+    /// a light one: an erase paints with the current background, and the caller is entitled to
+    /// treat the cleared screen as holding its blank cell. If the two disagree, every cell that
+    /// never gets written — which is most of a sparse screen — keeps the terminal's own colour.
+    #[test]
+    fn a_clear_paints_the_ground_rather_than_the_terminals_own_background() {
+        let mut painter = Painter::new(Vec::new(), Capabilities::default());
+        painter.set_ground(Color::Rgb(238, 241, 236));
+        painter.enter_screen().unwrap();
+        let output = String::from_utf8(painter.into_inner()).unwrap();
+        let set = "\x1b[48;2;238;241;236m";
+        let at = output.find(set).expect("the ground colour is never set");
+        let cleared = output.find(ansi::CLEAR_SCREEN).expect("the screen is never cleared");
+        assert!(
+            at < cleared,
+            "the ground has to be current before the erase, or it paints nothing"
+        );
+
+        // And a painter told nothing still says nothing, so a theme that inherits stays polite.
+        let mut plain = Painter::new(Vec::new(), Capabilities::default());
+        plain.enter_screen().unwrap();
+        let output = String::from_utf8(plain.into_inner()).unwrap();
+        assert!(!output.contains("\x1b[48"), "an inherited ground must not be painted: {output:?}");
     }
 
     #[test]
