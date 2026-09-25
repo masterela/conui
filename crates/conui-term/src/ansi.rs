@@ -40,6 +40,27 @@ pub const CURSOR_HOME: &str = "\x1b[H";
 /// Reset every graphic rendition to the terminal default.
 pub const RESET_STYLE: &str = "\x1b[0m";
 
+// ---- The terminal's own background ------------------------------------------------------
+
+/// Put the terminal's default background back the way the user configured it (OSC 111).
+///
+/// Sent on the way out, and unconditionally from the panic path: a terminal left holding an app's
+/// background is a terminal the user has to restart.
+pub const RESET_BACKGROUND: &str = "\x1b]111\x1b\\";
+
+/// Tell the terminal its own default background is this colour (OSC 11).
+///
+/// The one colour a grid cannot reach. A terminal draws a few pixels of padding around its cells and
+/// fills them with its *own* background, not with any cell — so an app whose theme is lighter than
+/// the terminal it is running in gets a dark frame around the whole screen, which no amount of
+/// clearing to the theme's ground will touch. This is the only sequence that closes that gap.
+///
+/// Allocates, unlike everything else here, because the colour is not known until run time. It is
+/// emitted twice a run at most.
+pub fn set_background(red: u8, green: u8, blue: u8) -> String {
+    format!("\x1b]11;rgb:{red:02x}/{green:02x}/{blue:02x}\x1b\\")
+}
+
 // ---- Synchronized output ---------------------------------------------------------------
 
 /// Begin an atomic frame (DECSET 2026).
