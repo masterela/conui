@@ -36,10 +36,40 @@ use std::io::{self, Stdout, Write};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use conui_cell::{Buffer, Cell, Pos};
+use conui_cell::{Buffer, Cell, Color, Pos};
 
 /// Terminal settings captured on entry, restored on exit.
 pub use platform::SavedMode;
+
+/// The terminal window in pixels, if the tty will say, before any [`Terminal`] exists.
+///
+/// Free-standing because the answer is usually wanted *early* — a program deciding how big an image
+/// to rasterise needs it to size the buffer it will draw into, which happens before there is a
+/// screen to draw it on. See [`Terminal::cell_pixels`] for the derived number.
+pub fn window_pixels() -> Option<(u16, u16)> {
+    platform::window_pixels().ok().flatten()
+}
+
+/// One cell in pixels, if the terminal will say, before any [`Terminal`] exists.
+///
+/// The same answer as [`Terminal::cell_pixels`], which this is the early-bird form of.
+pub fn cell_pixels() -> Option<(u16, u16)> {
+    divide_into_cells(window_pixels()?, platform::window_size().ok()?)
+}
+
+/// The window's pixels over its cells, clamped to a size a font could plausibly be.
+///
+/// Clamped because a terminal that reports nonsense is worse than one that reports nothing: `None`
+/// has an obvious fallback and a 2x400 cell does not. The bounds are generous — 4x8 is smaller than
+/// any readable font and 20x44 is larger than any retina cell — so the only values they reject are
+/// ones no font has.
+fn divide_into_cells(pixels: (u16, u16), cells: (u16, u16)) -> Option<(u16, u16)> {
+    let ((pixel_width, pixel_height), (columns, rows)) = (pixels, cells);
+    if columns == 0 || rows == 0 {
+        return None;
+    }
+    Some(((pixel_width / columns).clamp(4, 20), (pixel_height / rows).clamp(8, 44)))
+}
 
 /// Settings saved by whichever [`Terminal`] most recently entered raw mode.
 ///
@@ -62,9 +92,10 @@ fn emergency_restore() {
             "\x1b[?1006l\x1b[?1002l\x1b[?1000l",
             "\x1b[?1004l",
             "\x1b[?2004l",
-            "\x1b[?7h",    // autowrap back on
-            "\x1b[?1049l", // leave the alternate screen
-            "\x1b[?25h",   // show the cursor
+            "\x1b[?7h",       // autowrap back on
+            "\x1b]111\x1b\\", // the terminal's own background back, in case we claimed it
+            "\x1b[?1049l",    // leave the alternate screen
+            "\x1b[?25h",      // show the cursor
         )
         .as_bytes(),
     );
@@ -150,6 +181,9 @@ impl Terminal {
     pub fn set_blank_cell(&mut self, cell: Cell) {
         self.blank = cell;
         self.front.reset_to(cell);
+        // And the same colour to the painter, so that a clear really does leave this cell behind
+        // rather than the terminal's own background under a front buffer that claims otherwise.
+        self.painter.set_ground(cell.style.bg.unwrap_or(Color::Reset));
     }
 
     /// The painter underneath, for emitting a sequence this type does not wrap.
@@ -225,6 +259,27 @@ impl Terminal {
     /// The current size in cells, as of the last [`Terminal::sync_size`] or [`Terminal::present`].
     pub fn size(&self) -> (u16, u16) {
         (self.front.width(), self.front.height())
+    }
+
+    /// The terminal window in pixels, if it will say. `None` on Windows and over most ssh.
+    ///
+    /// Read fresh rather than cached, because the window can be resized between calls and this is
+    /// asked once per frame at most.
+    pub fn window_pixels(&self) -> Option<(u16, u16)> {
+        platform::window_pixels().ok().flatten()
+    }
+
+    /// One cell in pixels, if the terminal will say — the window's pixels over its cells.
+    ///
+    /// Worth asking rather than assuming 8x17. On a high-density display a cell is nearer 16x34, and
+    /// anything committing pixels to a decision — an image handed over at half the real size, a
+    /// bitmap that wanted square dots — pays for the wrong guess on every frame.
+    ///
+    /// Divided against *our* cell count rather than the tty's, so the answer agrees with the frame
+    /// the caller is about to draw even in the moment between a resize and the next
+    /// [`Terminal::sync_size`].
+    pub fn cell_pixels(&self) -> Option<(u16, u16)> {
+        divide_into_cells(self.window_pixels()?, self.size())
     }
 
     /// Re-read the terminal size, resizing the front buffer if it changed.
@@ -343,6 +398,24 @@ mod tests {
             Terminal::with_capabilities(Capabilities::plain(ColorDepth::NoColor)).unwrap();
         assert!(terminal.leave().is_ok());
         assert!(terminal.leave().is_ok());
+    }
+
+    #[test]
+    fn a_cell_size_is_the_window_divided_by_its_cells() {
+        assert_eq!(divide_into_cells((1216, 901), (152, 53)), Some((8, 17)));
+        // A retina cell, which is the case that makes assuming 8x17 wrong by a factor of two.
+        assert_eq!(divide_into_cells((2432, 1802), (152, 53)), Some((16, 34)));
+    }
+
+    #[test]
+    fn a_nonsense_report_is_clamped_rather_than_believed() {
+        // No screen is 40 pixels wide, and a caller that rasterises for a 0-pixel cell divides by
+        // zero somewhere downstream.
+        assert_eq!(divide_into_cells((40, 40), (152, 53)), Some((4, 8)));
+        assert_eq!(divide_into_cells((9000, 9000), (152, 53)), Some((20, 44)));
+        // And a screen with no cells has no cell size, rather than a panic.
+        assert_eq!(divide_into_cells((1216, 901), (0, 53)), None);
+        assert_eq!(divide_into_cells((1216, 901), (152, 0)), None);
     }
 
     #[test]

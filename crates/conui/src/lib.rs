@@ -74,6 +74,7 @@
 pub mod app;
 pub mod canvas;
 pub mod frame;
+pub mod headless;
 pub mod layout;
 pub mod state;
 pub mod theme;
@@ -82,7 +83,7 @@ pub mod view;
 pub mod widget;
 
 pub use app::{App, Config};
-pub use canvas::{Canvas, text_width};
+pub use canvas::{Canvas, clip, text_width, wrap};
 pub use frame::Frame;
 pub use layout::{Constraint, Direction, Layout, centered};
 pub use state::{Checklist, Dropdown, Editor, Focus, Hits, Selection, Viewport};
@@ -97,4 +98,4 @@ pub use conui_cell::{self, Buffer, Cell, Color, Padding, Pos, Rect, Style, Symbo
 pub use conui_input::{
     self, Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseKind,
 };
-pub use conui_term::{self, Terminal};
+pub use conui_term::{self, Terminal, cell_pixels, window_pixels};

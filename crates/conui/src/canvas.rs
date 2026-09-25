@@ -291,7 +291,7 @@ impl<'a> Canvas<'a> {
         for row in 0..area.height {
             let y = self.origin_y + i32::from(area.y) + i32::from(row);
             // A wide pattern may overhang; `write_str` clips it at the region edge.
-            let clipped = clamp_to_width(&tiled, area.width);
+            let clipped = clip(&tiled, area.width);
             self.write_str(self.origin_x + i32::from(area.x), y, clipped, style);
         }
     }
@@ -568,7 +568,12 @@ pub fn text_width(text: &str) -> u16 {
 }
 
 /// The longest prefix of `text` that fits in `max_width` columns.
-fn clamp_to_width(text: &str, max_width: u16) -> &str {
+///
+/// Public because a caller needs the *text* at least as often as it needs it drawn: a table cell, a
+/// panel title, a label being measured before anything is placed. Three separate apps wrote their
+/// own `clip` against `char` counts — which is wrong for anything east of Greece and for every
+/// emoji — while this one, grapheme-aware and already correct, sat here private.
+pub fn clip(text: &str, max_width: u16) -> &str {
     let mut used = 0u16;
     for (offset, grapheme) in text.grapheme_indices(true) {
         let width = Symbol::new(grapheme).width();
@@ -578,6 +583,63 @@ fn clamp_to_width(text: &str, max_width: u16) -> &str {
         used += width;
     }
     text
+}
+
+/// Greedy word wrap to `width` columns, hard-breaking words too long to fit on their own.
+///
+/// Counted in display columns rather than characters, so a wrapped paragraph of CJK or of anything
+/// with combining marks in it comes out the width it was asked for.
+pub fn wrap(text: &str, width: u16) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut used = 0u16;
+
+    for word in text.split_whitespace() {
+        let word_width = text_width(word);
+        // A word wider than the whole region has to be broken, or it would vanish entirely.
+        if word_width > width {
+            if used > 0 {
+                lines.push(std::mem::take(&mut current));
+            }
+            let mut chunk = String::new();
+            let mut chunk_width = 0u16;
+            for character in word.chars() {
+                let character_width = text_width(&character.to_string());
+                if chunk_width + character_width > width {
+                    lines.push(std::mem::take(&mut chunk));
+                    chunk_width = 0;
+                }
+                chunk.push(character);
+                chunk_width += character_width;
+            }
+            current = chunk;
+            used = chunk_width;
+            continue;
+        }
+        let needed = if used == 0 { word_width } else { used + 1 + word_width };
+        if needed > width {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+            used = word_width;
+        } else {
+            if used > 0 {
+                current.push(' ');
+                used += 1;
+            }
+            current.push_str(word);
+            used += word_width;
+        }
+    }
+    // An empty input yields one empty line rather than none: a blank line between two paragraphs is
+    // a line the caller asked for, and `Text` splits on newlines before wrapping each piece, so
+    // collapsing it here would silently close the gap up.
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
 }
 
 /// The block characters a filled cell can be drawn with, re-exported for convenience.
