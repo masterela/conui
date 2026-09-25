@@ -137,6 +137,15 @@ pub fn window_size() -> io::Result<(u16, u16)> {
     Ok((columns, rows))
 }
 
+/// The terminal window in pixels, which the console API does not report.
+///
+/// `CONSOLE_SCREEN_BUFFER_INFO` counts cells and nothing else, and the font metrics that would let
+/// this be derived belong to whichever host is drawing the console rather than to the console. The
+/// honest answer is that we do not know, so the caller's fallback runs instead of a guess.
+pub fn window_pixels() -> io::Result<Option<(u16, u16)>> {
+    Ok(None)
+}
+
 /// Wait until stdin has bytes a read would return, or `timeout` elapses.
 ///
 /// The console input handle signals for every input record, not just keys: a resize, a focus

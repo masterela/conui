@@ -96,6 +96,51 @@ Only a true-colour terminal and only an `Rgb` ground: sending an indexed ground 
 deciding what the user's palette index 4 looks like, and getting that wrong paints the padding a colour
 that appears nowhere else on screen. `Theme::INHERIT` still emits nothing and so has nothing to undo.
 
+### Four things the apps kept writing for themselves
+
+Two apps outside this repo are built on conui — `chatmend`, which repairs Copilot chat sessions, and
+`dash`, a car dashboard that draws a live map in pixels. Reading both against the library found four
+places where the app had written something conui should have had, and the evidence for each is the same
+shape: it was written more than once, and the copies had drifted.
+
+**`conui::headless::Screen`.** A frame needs nothing but a `Buffer`, so a whole screen is renderable
+with no terminal — eight lines to make the buffer, wrap it, draw, and read the rows back trimmed. Both
+apps had written those eight lines twice each, once in their tests and once in the `--dump` flag that
+prints a frame to stdout, and all four copies differed on whether rows are trimmed and whether the last
+one carries a newline. `Screen::new(w, h)`, `.view(&view)` or `.draw(|frame| ..)`, then `text()`,
+`rows()`, `row(y)`, `contains`, `find`, `buffer()`, `cursor()`, `resize()`, and `Display` for the form a
+`--dump` prints. `assert_shows` and `assert_hides` panic with the whole screen in the message, which is
+the thing you actually want when a layout assertion fails. Not behind `cfg(test)`, because a `--dump`
+path ships.
+
+**`conui::clip` and `conui::wrap`.** Both were already here and both were private — `clip` in `canvas`
+and `wrap` inside `widget`. Three apps had written their own `clip` against `char` counts, which is
+wrong for anything east of Greece and for every emoji, while the grapheme-aware one sat unreachable. A
+caller wants the *text* at least as often as it wants it drawn: a table cell, a panel title, a label
+being measured before anything is placed.
+
+**`conui_term::cell_pixels`.** `window_size` has always read the terminal's `winsize` and thrown away
+`ws_xpixel` and `ws_ypixel`, so an app that needed them — anything rasterising an image for a
+graphics protocol — had no way to ask and wrote a raw `unsafe extern "C" ioctl` with a per-OS request
+constant instead. Now `Terminal::window_pixels`/`cell_pixels` and free functions of the same names for
+the common case of needing the answer before there is a screen. `None` rather than a plausible default:
+Windows cannot answer, ssh and multiplexers usually lose it, and a caller only asks because it is about
+to commit pixels to a decision. The cell size is clamped to a range a font could plausibly have, since
+`None` has an obvious fallback and a 2x400 cell does not.
+
+**`widget::Reading` and `Hints::trailing`.** `dash` imports zero widgets from conui and `chatmend`
+imports twelve, which locates the gap precisely: forms and tables are served, instruments are not. A
+`Reading` is `Field`'s three-column sibling — `LEFT  24.8 km  via A12` — with the columns fixed so a
+stack of them is read down the value column, and one step of degradation that drops the note and sends
+the value to the right edge. `Hints::trailing` puts a status on the right of the footer and takes the
+room out of the legend *before* it is filled, which a caller drawing the status afterwards cannot do;
+both apps had written the same reserve-then-place loop by hand.
+
+What was assessed and deliberately left out: a pixel-graphics layer (`Image`, backend selection,
+damage tracking) and a software rasteriser. The protocol knowledge is genuinely terminal knowledge and
+belongs here eventually; a 2D rasteriser is an unbounded surface that contradicts a four-dependency
+library, and `tiny-skia` already exists.
+
 ### Four examples, each of which tests itself
 
 `snake`, `todo`, `settings` and `monitor` — the last a process monitor that reads a real machine on
