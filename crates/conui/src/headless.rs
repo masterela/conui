@@ -75,8 +75,8 @@ impl Screen {
     /// The screen as one string, rows joined by newlines, each trailing blank trimmed.
     ///
     /// Trimmed because trailing spaces are the one part of a frame that is never deliberate, and an
-    /// assertion that fails on them wastes the reader's time. There is no trailing newline; see
-    /// [`Screen::to_string`] via [`fmt::Display`] for the form a `--dump` prints.
+    /// assertion that fails on them wastes the reader's time. There is no trailing newline; the
+    /// [`fmt::Display`] impl is the form a `--dump` prints, one newline per row.
     pub fn text(&self) -> String {
         self.rows().join("\n")
     }
