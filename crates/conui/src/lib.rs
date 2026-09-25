@@ -85,7 +85,7 @@ pub use app::{App, Config};
 pub use canvas::{Canvas, text_width};
 pub use frame::Frame;
 pub use layout::{Constraint, Direction, Layout, centered};
-pub use state::{Dropdown, Editor, Focus, Hits, Selection, Viewport};
+pub use state::{Checklist, Dropdown, Editor, Focus, Hits, Selection, Viewport};
 pub use theme::{Role, Theme};
 pub use typography::BarStyle;
 pub use view::{View, ViewExt};
