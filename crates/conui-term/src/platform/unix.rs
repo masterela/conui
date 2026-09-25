@@ -66,6 +66,21 @@ pub fn window_size() -> io::Result<(u16, u16)> {
     Ok((size.ws_col, size.ws_row))
 }
 
+/// The terminal window in *pixels*, if the tty will say — `None` when it reports zeroes.
+///
+/// The same `ioctl` as [`window_size`], reading the two fields it throws away. Most terminals fill
+/// them in; some report zeroes, and over ssh or inside a multiplexer they are usually lost, so this
+/// is an `Option` rather than a number with a plausible default. Guessing here is worse than not
+/// answering: a caller only asks because it is about to commit pixels to a decision.
+pub fn window_pixels() -> io::Result<Option<(u16, u16)>> {
+    let fd = if is_output_tty() { stdout() } else { stdin() };
+    let size = termios::tcgetwinsize(fd)?;
+    if size.ws_xpixel == 0 || size.ws_ypixel == 0 {
+        return Ok(None);
+    }
+    Ok(Some((size.ws_xpixel, size.ws_ypixel)))
+}
+
 /// Block until stdin has bytes to read, or `timeout` elapses. `None` waits indefinitely.
 ///
 /// Returns `true` when input is ready.

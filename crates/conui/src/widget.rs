@@ -12,7 +12,7 @@ use std::ops::Range;
 
 use conui_cell::{Padding, Pos, Rect, Style};
 
-use crate::canvas::{Canvas, text_width};
+use crate::canvas::{Canvas, text_width, wrap};
 use crate::layout::{Constraint, Direction, resolve};
 use crate::state::{Checklist, Dropdown, Editor, Selection, Viewport};
 use crate::theme::Role;
@@ -157,57 +157,6 @@ impl View for Text {
             }
         }
     }
-}
-
-/// Greedy word wrap to `width` columns, hard-breaking words that do not fit on their own.
-fn wrap(text: &str, width: u16) -> Vec<String> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines = Vec::new();
-    let mut current = String::new();
-    let mut used = 0u16;
-
-    for word in text.split_whitespace() {
-        let word_width = text_width(word);
-        // A word wider than the whole region has to be broken, or it would vanish entirely.
-        if word_width > width {
-            if used > 0 {
-                lines.push(std::mem::take(&mut current));
-            }
-            let mut chunk = String::new();
-            let mut chunk_width = 0u16;
-            for character in word.chars() {
-                let character_width = text_width(&character.to_string());
-                if chunk_width + character_width > width {
-                    lines.push(std::mem::take(&mut chunk));
-                    chunk_width = 0;
-                }
-                chunk.push(character);
-                chunk_width += character_width;
-            }
-            current = chunk;
-            used = chunk_width;
-            continue;
-        }
-        let needed = if used == 0 { word_width } else { used + 1 + word_width };
-        if needed > width {
-            lines.push(std::mem::take(&mut current));
-            current.push_str(word);
-            used = word_width;
-        } else {
-            if used > 0 {
-                current.push(' ');
-                used += 1;
-            }
-            current.push_str(word);
-            used += word_width;
-        }
-    }
-    if !current.is_empty() || lines.is_empty() {
-        lines.push(current);
-    }
-    lines
 }
 
 // ---- Rule -------------------------------------------------------------------------------
@@ -956,6 +905,155 @@ impl View for Field {
     }
 }
 
+// ---- Reading ----------------------------------------------------------------------------
+
+/// A label, a value, and a note that qualifies it: `LEFT    24.8 km    via A12`.
+///
+/// [`Field`]'s three-column sibling, and the widget a side rail of instruments is built from. The
+/// third column is the difference between a fact and a decision — `24.8 km` is how far, `via A12` is
+/// which way, and `+6 min` is only worth knowing at all once it says where.
+///
+/// Columns rather than right-alignment because a stack of these is read down the value column without
+/// the labels being read at all, which is most of what a rail is for, and a right-aligned value
+/// column moves every time one row's note grows. The price is that the columns are the caller's to
+/// choose; the default pair suits a rail of about forty columns.
+///
+/// Below [`narrow`](Self::narrow) the note is dropped and the value goes to the right edge, because a
+/// three-column row in twenty columns is three truncations. That is the whole of its degradation, and
+/// it is deliberately one step: a rail that reflows twice on the way down is a rail whose layout the
+/// reader has to relearn at every window size.
+pub struct Reading {
+    label: String,
+    value: String,
+    note: String,
+    label_role: Role,
+    value_role: Role,
+    note_role: Role,
+    value_column: u16,
+    note_column: u16,
+    narrow: Option<u16>,
+}
+
+impl Reading {
+    /// A reading of `label` and `value`, with no note until one is given.
+    ///
+    /// An empty value is allowed and is not the same as no value: a row whose note is the whole point
+    /// — `ARRIVAL` over `in 14 min` with the clock still unknown — keeps its column so the rows above
+    /// and below it stay aligned.
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            note: String::new(),
+            label_role: Role::Dim,
+            value_role: Role::Text,
+            note_role: Role::Dim,
+            value_column: 8,
+            note_column: 17,
+            narrow: None,
+        }
+    }
+
+    /// The qualifier drawn in the third column, truncated to whatever is left of the row.
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = note.into();
+        self
+    }
+
+    /// Colour of the value — the half worth colouring when a reading goes out of range.
+    pub fn role(mut self, role: Role) -> Self {
+        self.value_role = role;
+        self
+    }
+
+    /// Colour of the label. [`Role::Dim`] by default, which is what makes the value the thing read.
+    pub fn label_role(mut self, role: Role) -> Self {
+        self.label_role = role;
+        self
+    }
+
+    /// Colour of the note.
+    pub fn note_role(mut self, role: Role) -> Self {
+        self.note_role = role;
+        self
+    }
+
+    /// Where the value and the note start, in columns from the left of the row.
+    ///
+    /// One call rather than two because the pair has to be chosen together against the longest label
+    /// and the longest value in the rail — setting one without looking at the other is how a column
+    /// ends up one space from its neighbour.
+    pub fn columns(mut self, value: u16, note: u16) -> Self {
+        self.value_column = value;
+        self.note_column = note;
+        self
+    }
+
+    /// The width below which the row collapses to a label and a right-aligned value.
+    ///
+    /// Defaults to eight columns past the note column, which is enough for a note to be a note
+    /// rather than an abbreviation. Set it when the rail's notes are longer or shorter than that.
+    pub fn narrow(mut self, width: u16) -> Self {
+        self.narrow = Some(width);
+        self
+    }
+
+    /// The width below which this row collapses.
+    fn threshold(&self) -> u16 {
+        self.narrow.unwrap_or(self.note_column.saturating_add(8))
+    }
+
+    /// Columns this row wants: enough for whichever of its two right-hand columns reaches furthest.
+    ///
+    /// Not the sum of the three, because the columns are fixed and a short value does not pull the
+    /// note left.
+    pub fn width(&self) -> u16 {
+        let value = self.value_column.saturating_add(text_width(&self.value));
+        let label = text_width(&self.label).saturating_add(1);
+        let note = match self.note.is_empty() {
+            true => 0,
+            false => self.note_column.saturating_add(text_width(&self.note)),
+        };
+        label.max(value).max(note)
+    }
+}
+
+impl View for Reading {
+    fn render(&self, canvas: &mut Canvas<'_>) {
+        let width = canvas.width();
+        if width < self.threshold() {
+            let room = width.saturating_sub(text_width(&self.value)).saturating_sub(1);
+            canvas.put_truncated(0, 0, &self.label, room, self.label_role);
+            canvas.put_right(i32::from(width), 0, &self.value, self.value_role);
+            return;
+        }
+        let label_room = self.value_column.saturating_sub(1);
+        canvas.put_truncated(0, 0, &self.label, label_room, self.label_role);
+        // The value is only held to its column when there is a note to protect: a row with two
+        // columns has the rest of the row, and cutting a lone value short to defend an empty
+        // column would be a truncation with nothing on the other side of it.
+        let value_room = match self.note.is_empty() {
+            true => width.saturating_sub(self.value_column),
+            false => self.note_column.saturating_sub(self.value_column).saturating_sub(1),
+        };
+        canvas.put_truncated(
+            i32::from(self.value_column),
+            0,
+            &self.value,
+            value_room,
+            self.value_role,
+        );
+        if !self.note.is_empty() {
+            let room = width.saturating_sub(self.note_column);
+            canvas.put_truncated(i32::from(self.note_column), 0, &self.note, room, self.note_role);
+        }
+    }
+
+    fn constraint(&self, axis: Direction) -> Constraint {
+        one_row(axis)
+    }
+}
+
 // ---- Panel ------------------------------------------------------------------------------
 
 /// How a panel marks its edges.
@@ -1129,6 +1227,7 @@ impl View for Panel<'_> {
 /// terminal UI has: there are no menus and nothing to hover, so the key map has to be on screen.
 pub struct Hints {
     items: Vec<(String, String)>,
+    trailing: Option<(String, Role)>,
     key_role: Role,
     label_role: Role,
     spacing: u16,
@@ -1137,7 +1236,13 @@ pub struct Hints {
 impl Hints {
     /// An empty legend. Add entries with [`key`](Self::key).
     pub fn new() -> Self {
-        Self { items: Vec::new(), key_role: Role::Muted, label_role: Role::Muted, spacing: 3 }
+        Self {
+            items: Vec::new(),
+            trailing: None,
+            key_role: Role::Muted,
+            label_role: Role::Muted,
+            spacing: 3,
+        }
     }
 
     /// Add `key` and what pressing it does, to the right of everything already added.
@@ -1146,6 +1251,22 @@ impl Hints {
     /// for the whole legend the entries at the end are the ones that go.
     pub fn key(mut self, key: impl Into<String>, action: impl Into<String>) -> Self {
         self.items.push((key.into(), action.into()));
+        self
+    }
+
+    /// A status pinned to the right edge of the same row, which the hints give way to.
+    ///
+    /// The footer is the one row a full-screen app has spare, so the state that is true right now —
+    /// `PAUSED`, `3 unsaved`, `reconnecting` — ends up sharing it with the key map. Sharing it
+    /// correctly is fiddlier than it looks: the status is the more urgent of the two and the hints are
+    /// the more expendable, so the room has to be taken out of the legend *before* it is filled,
+    /// which a caller drawing the status afterwards cannot do. Every app that tried wrote the same
+    /// reserve-then-place loop by hand.
+    ///
+    /// The status is never truncated. A footer too narrow for both shows the status and as many hints
+    /// as are left over, down to none.
+    pub fn trailing(mut self, text: impl Into<String>, role: Role) -> Self {
+        self.trailing = Some((text.into(), role));
         self
     }
 
@@ -1176,10 +1297,17 @@ impl Hints {
     }
 
     /// Columns this legend wants, with no trailing spacing.
+    ///
+    /// Includes a [`trailing`](Self::trailing) status and the gap before it, since that is the width
+    /// at which nothing has to be dropped.
     pub fn width(&self) -> u16 {
         let items: u16 = self.items.iter().map(|(k, a)| Self::item_width(k, a)).sum();
         let gaps = self.items.len().saturating_sub(1) as u16 * self.spacing;
-        items + gaps
+        let trailing = match &self.trailing {
+            None => 0,
+            Some((text, _)) => text_width(text) + self.spacing,
+        };
+        items + gaps + trailing
     }
 }
 
@@ -1191,18 +1319,28 @@ impl Default for Hints {
 
 impl View for Hints {
     fn render(&self, canvas: &mut Canvas<'_>) {
+        let width = i32::from(canvas.width());
+        // The room the hints have is the row minus whatever the status has already claimed, whether or
+        // not it has been drawn yet.
+        let room = match &self.trailing {
+            None => width,
+            Some((text, _)) => width - i32::from(text_width(text)) - i32::from(self.spacing),
+        };
         let mut x = 0i32;
         for (key, action) in &self.items {
             // Drop an item that does not fit whole rather than letting the canvas clip it. A
             // legend reading `ESC qui` looks like a bug in the program; one hint fewer just looks
             // like a narrow window.
-            if x + i32::from(Self::item_width(key, action)) > i32::from(canvas.width()) {
+            if x + i32::from(Self::item_width(key, action)) > room {
                 break;
             }
             x += i32::from(canvas.put(x, 0, key, self.key_role));
             x += 1;
             x += i32::from(canvas.put(x, 0, action, self.label_role));
             x += i32::from(self.spacing);
+        }
+        if let Some((text, role)) = &self.trailing {
+            canvas.put_right(width, 0, text, *role);
         }
     }
 
@@ -3106,6 +3244,62 @@ mod tests {
         assert!(line.contains('…'), "got {line:?}");
     }
 
+    // ---- Reading ------------------------------------------------------------------------
+
+    #[test]
+    fn a_reading_puts_its_three_parts_in_three_columns() {
+        let reading = Reading::new("LEFT", "24.8 km").note("via A12");
+        assert_eq!(row(&reading, 30), "LEFT    24.8 km  via A12      ");
+        assert_eq!(reading.constraint(Direction::Vertical), Constraint::Length(1));
+    }
+
+    #[test]
+    fn a_stack_of_readings_lines_its_values_up_whatever_their_labels() {
+        let stack = Stack::new(Direction::Vertical)
+            .child(Reading::new("TO", "Rotterdam"))
+            .child(Reading::new("ARRIVAL", "17:42"));
+        let lines = rows(&stack, 30, 2);
+        // The point of columns over right-alignment: a short label does not drag its value left.
+        assert!(lines[0].starts_with("TO      Rotterdam"), "{lines:?}");
+        assert!(lines[1].starts_with("ARRIVAL 17:42"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_narrow_reading_drops_the_note_and_goes_to_the_edge() {
+        let reading = Reading::new("LEFT", "24.8 km").note("via A12");
+        // At the threshold the three columns hold; one column below it they collapse in one step.
+        assert_eq!(row(&reading, 25), "LEFT    24.8 km  via A12 ");
+        assert_eq!(row(&reading, 24), "LEFT             24.8 km");
+    }
+
+    #[test]
+    fn a_readings_columns_and_threshold_are_the_callers_to_set() {
+        let reading = Reading::new("LEFT", "24.8 km").note("via A12").columns(6, 14).narrow(30);
+        assert_eq!(row(&reading, 30), "LEFT  24.8 km via A12         ");
+        // A wider threshold than the columns need, because this rail's notes are longer.
+        assert_eq!(row(&reading, 29), "LEFT                  24.8 km");
+    }
+
+    #[test]
+    fn a_lone_value_is_not_held_to_the_note_column() {
+        // Nothing to protect, so it runs on rather than being cut to defend an empty column.
+        let long = Reading::new("VIA", "A12 then the N57 west");
+        assert_eq!(row(&long, 32), "VIA     A12 then the N57 west   ");
+        // With a note, the same value stops short of it.
+        let noted = long.note("+6 min");
+        assert_eq!(row(&noted, 32), "VIA     A12 the… +6 min         ");
+    }
+
+    #[test]
+    fn a_reading_keeps_its_column_when_the_value_is_not_known_yet() {
+        // An empty value is not the same as no value: the note stays in the third column so the
+        // rows above and below stay aligned.
+        assert_eq!(
+            row(&Reading::new("ARRIVAL", "").note("in 14 min"), 30),
+            "ARRIVAL          in 14 min    "
+        );
+    }
+
     // ---- Panel --------------------------------------------------------------------------
 
     #[test]
@@ -3200,6 +3394,17 @@ mod tests {
         // One column short of the second hint: it goes entirely, not half of it.
         assert_eq!(row(&hints, 18), "TAB next          ");
         assert_eq!(row(&hints, 19), "TAB next   ESC quit");
+    }
+
+    #[test]
+    fn a_trailing_status_holds_the_right_edge_and_the_hints_give_way_to_it() {
+        let hints = Hints::new().key("P", "pause").key("Q", "quit").trailing("PAUSED", Role::Warn);
+        assert_eq!(hints.width(), 7 + 3 + 6 + 3 + 6);
+        assert_eq!(row(&hints, 25), "P pause   Q quit   PAUSED");
+        // One column short: the last hint goes, and the status does not move.
+        assert_eq!(row(&hints, 24), "P pause           PAUSED");
+        // Too narrow for any hint at all, and the status is still there — it is the urgent half.
+        assert_eq!(row(&hints, 10), "    PAUSED");
     }
 
     // ---- List ---------------------------------------------------------------------------
