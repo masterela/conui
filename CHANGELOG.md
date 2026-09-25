@@ -82,6 +82,20 @@ writing kept the terminal's colour for the whole run. `Painter::set_ground` name
 should leave behind, and `Terminal::set_blank_cell` passes it the background it was given, so the two
 can no longer disagree. A theme of `Theme::INHERIT` still emits nothing.
 
+### And the padding, which no cell can reach
+
+The other half of the same bug, and the half a grid cannot fix: a terminal draws a few pixels of
+padding around its cells and fills them with its *own* background. An app whose theme is lighter than
+the terminal it runs in therefore gets a dark frame around the entire screen, invisible on a dark theme
+and glaring on a light one, with every cell inside it already correct. So `Painter::set_ground` now also
+tells the terminal, with `ansi::set_background` (OSC 11) on the way in and `ansi::RESET_BACKGROUND`
+(OSC 111) on the way out — including from the panic path, because a terminal left holding an app's
+background is a terminal the user has to restart. A theme switch while running reaches it too.
+
+Only a true-colour terminal and only an `Rgb` ground: sending an indexed ground would mean this crate
+deciding what the user's palette index 4 looks like, and getting that wrong paints the padding a colour
+that appears nowhere else on screen. `Theme::INHERIT` still emits nothing and so has nothing to undo.
+
 ### Four examples, each of which tests itself
 
 `snake`, `todo`, `settings` and `monitor` — the last a process monitor that reads a real machine on

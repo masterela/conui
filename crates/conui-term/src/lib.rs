@@ -62,9 +62,10 @@ fn emergency_restore() {
             "\x1b[?1006l\x1b[?1002l\x1b[?1000l",
             "\x1b[?1004l",
             "\x1b[?2004l",
-            "\x1b[?7h",    // autowrap back on
-            "\x1b[?1049l", // leave the alternate screen
-            "\x1b[?25h",   // show the cursor
+            "\x1b[?7h",       // autowrap back on
+            "\x1b]111\x1b\\", // the terminal's own background back, in case we claimed it
+            "\x1b[?1049l",    // leave the alternate screen
+            "\x1b[?25h",      // show the cursor
         )
         .as_bytes(),
     );
